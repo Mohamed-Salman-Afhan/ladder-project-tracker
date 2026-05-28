@@ -19,6 +19,7 @@ const SHEETS_DEFAULTS = {
   url: "https://script.google.com/macros/s/AKfycbzuPa5HwBMz84G4WbOudvA0Yw0R9zKIiziRRz2LDS-KQZVB7-FTJGYbBFd331ZNVI98HA/exec",
   secret: "lg-web-project-tracker-2026",
 };
+const SHEET_VIEW_URL = "https://docs.google.com/spreadsheets/d/1bgvc5kE8ELx_xg9APYfsHIY1_9bh7zl34lPJ-K-uQvM/edit";
 
 const mkStage = (n) => ({ name: n, assignee: "", startDate: "", endDate: "", status: "Not Started", notes: "" });
 const mkProject = () => ({ id: crypto.randomUUID(), projectName: "", clientName: "", website: "", status: "Not Started", stages: STAGES.map(mkStage) });
@@ -172,129 +173,67 @@ function SheetsTab({ sheetsCfg, setSheetsCfg, onTestSync, syncStatus }) {
   const { isMobile } = useBreakpoint();
   const [cfg, setCfg] = useState(sheetsCfg);
   const set = (k, v) => setCfg((c) => ({ ...c, [k]: v }));
-  const canTest = cfg.url && cfg.secret;
-
-  const SCRIPT_TEMPLATE = `// Google Apps Script – deploy as Web App (Anyone access, Execute as: Me)
-function doPost(e) {
-  try {
-    const data = JSON.parse(e.postData.contents);
-
-    // Secret token check — reject unauthorized requests
-    if (data.secret !== "lg-web-project-tracker-2026") {
-      return ContentService
-        .createTextOutput(JSON.stringify({ ok: false, error: "Unauthorized" }))
-        .setMimeType(ContentService.MimeType.JSON);
-    }
-
-    const ss = SpreadsheetApp.openById("1bgvc5kE8ELx_xg9APYfsHIY1_9bh7zl34lPJ-K-uQvM");
-    let sheet = ss.getSheetByName("Project Tracker");
-    if (!sheet) {
-      sheet = ss.insertSheet("Project Tracker");
-      sheet.appendRow(["Project","Client","Website","Status","Progress %",
-        "Questionnaire","Q Assignee","Kickoff Meeting","KM Assignee",
-        "UI/UX Design","UI Assignee","Development","Dev Assignee","Last Updated"]);
-    }
-
-    const last = sheet.getLastRow();
-    if (last > 1) sheet.getRange(2, 1, last - 1, sheet.getLastColumn()).clearContent();
-
-    data.projects.forEach(p => {
-      const s = p.stages;
-      sheet.appendRow([
-        p.projectName, p.clientName, p.website, p.status, p.progress + "%",
-        s[0].status, s[0].assignee, s[1].status, s[1].assignee,
-        s[2].status, s[2].assignee, s[3].status, s[3].assignee,
-        new Date().toLocaleString()
-      ]);
-    });
-    return ContentService
-      .createTextOutput(JSON.stringify({ ok: true }))
-      .setMimeType(ContentService.MimeType.JSON);
-  } catch (err) {
-    return ContentService
-      .createTextOutput(JSON.stringify({ ok: false, error: err.toString() }))
-      .setMimeType(ContentService.MimeType.JSON);
-  }
-}`;
+  const canSave = cfg.url && cfg.secret;
 
   return (
-    <div style={{ maxWidth: 700 }}>
-      <div style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 14, overflow: "hidden", boxShadow: "0 1px 4px #0001", marginBottom: 20 }}>
-        <div style={{ padding: "18px 22px", background: NAVY, borderBottom: "1px solid #ffffff22" }}>
-          <h2 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: "#fff" }}>Google Sheets Sync</h2>
-          <p style={{ margin: "4px 0 0", fontSize: 12, color: "#aab8cc" }}>Auto-populate your Google Sheet whenever a project is added or updated.</p>
-        </div>
-        <div style={{ padding: "20px 22px" }}>
-          {/* Step 1 */}
-          <div style={{ marginBottom: 20 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-              <div style={{ width: 24, height: 24, borderRadius: "50%", background: BRAND, color: "#fff", fontSize: 12, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>1</div>
-              <span style={{ fontWeight: 800, fontSize: 14, color: NAVY }}>Paste script into Apps Script</span>
-            </div>
-            <p style={{ margin: "0 0 10px", fontSize: 13, color: "#64748b" }}>Open your Sheet → <strong>Extensions → Apps Script</strong> → paste the code below → deploy as <strong>Web App</strong>.</p>
-            <div style={{ background: "#e8f5e9", border: "1px solid #c8e6c9", borderRadius: 8, padding: "10px 14px", marginBottom: 10, fontSize: 12, color: "#2e7d32" }}>
-              <strong>Deployment settings:</strong> Execute as <strong>Me</strong> · Who has access: <strong>Anyone</strong><br />
-              The secret token keeps unauthorized writes out even with public access.
-            </div>
-            <div style={{ position: "relative" }}>
-              <pre style={{ background: "#0f1b2d", color: "#e2e8f0", borderRadius: 10, padding: "14px 16px", fontSize: isMobile ? 10 : 11, overflowX: "auto", lineHeight: 1.6, margin: 0 }}>{SCRIPT_TEMPLATE}</pre>
-              <button onClick={() => navigator.clipboard.writeText(SCRIPT_TEMPLATE)} style={{ position: "absolute", top: 8, right: 8, padding: "4px 10px", borderRadius: 6, border: "none", background: BRAND, color: "#fff", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Copy</button>
-            </div>
-          </div>
-
-          {/* Step 2 */}
-          <div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-              <div style={{ width: 24, height: 24, borderRadius: "50%", background: BRAND, color: "#fff", fontSize: 12, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>2</div>
-              <span style={{ fontWeight: 800, fontSize: 14, color: NAVY }}>Configure & Test</span>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10, marginBottom: 12 }}>
-              <div>
-                <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#94a3b8", marginBottom: 5, textTransform: "uppercase", letterSpacing: 0.5 }}>Secret Token</label>
-                <input value={cfg.secret} onChange={(e) => set("secret", e.target.value)} placeholder="lg-web-project-tracker-2026" style={{ width: "100%", padding: "9px 14px", border: "1.5px solid #e2e8f0", borderRadius: 8, fontSize: 13, outline: "none", color: NAVY, boxSizing: "border-box" }} />
-              </div>
-              <div>
-                <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#94a3b8", marginBottom: 5, textTransform: "uppercase", letterSpacing: 0.5 }}>Web App URL</label>
-                <input value={cfg.url} onChange={(e) => set("url", e.target.value)} placeholder="https://script.google.com/macros/s/…/exec" style={{ width: "100%", padding: "9px 14px", border: "1.5px solid #e2e8f0", borderRadius: 8, fontSize: 13, outline: "none", color: NAVY, boxSizing: "border-box" }} />
-              </div>
-            </div>
-            <button
-              onClick={() => { setSheetsCfg(cfg); onTestSync(); }}
-              disabled={!canTest}
-              style={{ width: "100%", padding: "10px 18px", borderRadius: 8, border: "none", background: canTest ? BRAND : "#e2e8f0", color: canTest ? "#fff" : "#aaa", cursor: canTest ? "pointer" : "not-allowed", fontWeight: 800, fontSize: 14 }}
-            >
-              Save & Test Sync
-            </button>
-            {syncStatus && (
-              <div style={{ marginTop: 10, padding: "10px 14px", borderRadius: 8, background: syncStatus.ok ? "#f0fdf4" : "#fef2f2", color: syncStatus.ok ? "#16a34a" : "#ef4444", fontSize: 13, fontWeight: 600 }}>
-                {syncStatus.ok ? "✓ Sync successful! Your Google Sheet has been updated." : `✗ ${syncStatus.msg}`}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Deployment guide */}
+    <div style={{ maxWidth: 540 }}>
       <div style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 14, overflow: "hidden", boxShadow: "0 1px 4px #0001" }}>
-        <div style={{ padding: "14px 22px", background: NAVY }}>
-          <h2 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: "#fff" }}>Deployment Info</h2>
+
+        {/* Header */}
+        <div style={{ padding: "18px 22px", background: NAVY, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <h2 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: "#fff" }}>Google Sheets Sync</h2>
+            <p style={{ margin: "3px 0 0", fontSize: 12, color: "#aab8cc" }}>Auto-syncs on every project save or delete.</p>
+          </div>
+          <a href={SHEET_VIEW_URL} target="_blank" rel="noopener noreferrer"
+            style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 16px", borderRadius: 8, border: "1px solid #3ECF8E55", background: "#3ECF8E22", color: "#3ECF8E", textDecoration: "none", fontSize: 13, fontWeight: 700, whiteSpace: "nowrap" }}>
+            Open Google Sheet ↗
+          </a>
         </div>
-        <div style={{ padding: "16px 22px" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-            <tbody>
-              {[
-                ["Deployment ID", "AKfycbzuPa5HwBMz84G4WbOudvA0Yw0R9zKIiziRRz2LDS-KQZVB7-FTJGYbBFd331ZNVI98HA"],
-                ["Secret Token", "lg-web-project-tracker-2026"],
-                ["Execute as", "Me (your Google account)"],
-                ["Who has access", "Anyone"],
-              ].map(([k, v]) => (
-                <tr key={k} style={{ borderBottom: "1px solid #f1f5f9" }}>
-                  <td style={{ padding: "9px 0", fontWeight: 700, color: "#64748b", fontSize: 12, textTransform: "uppercase", letterSpacing: 0.4, whiteSpace: "nowrap", paddingRight: 16 }}>{k}</td>
-                  <td style={{ padding: "9px 0", color: NAVY, fontFamily: "monospace", fontSize: 12, wordBreak: "break-all" }}>{v}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+
+        {/* Auto-sync indicator */}
+        <div style={{ padding: "10px 22px", background: "#f0fdf4", borderBottom: "1px solid #dcfce7", display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#22c55e", flexShrink: 0 }} />
+          <span style={{ fontSize: 13, color: "#16a34a", fontWeight: 600 }}>
+            Auto-sync active — sheet updates on every project add, edit, or delete.
+          </span>
+        </div>
+
+        {/* Last sync result */}
+        {syncStatus && (
+          <div style={{ padding: "10px 22px", borderBottom: "1px solid #f0f0f0", background: syncStatus.ok ? "#f0fdf4" : "#fef2f2" }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: syncStatus.ok ? "#16a34a" : "#ef4444" }}>
+              {syncStatus.ok ? "✓ Last sync succeeded" : `✗ Last sync failed: ${syncStatus.msg}`}
+            </span>
+          </div>
+        )}
+
+        {/* Config */}
+        <div style={{ padding: "20px 22px" }}>
+          <h3 style={{ margin: "0 0 14px", fontSize: 13, fontWeight: 800, color: NAVY, textTransform: "uppercase", letterSpacing: 0.4 }}>Apps Script Config</h3>
+          <div style={{ display: "grid", gap: 10, marginBottom: 14 }}>
+            <div>
+              <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#94a3b8", marginBottom: 5, textTransform: "uppercase", letterSpacing: 0.5 }}>Secret Token</label>
+              <input value={cfg.secret} onChange={(e) => set("secret", e.target.value)}
+                style={{ width: "100%", padding: "9px 14px", border: "1.5px solid #e2e8f0", borderRadius: 8, fontSize: 13, outline: "none", color: NAVY, boxSizing: "border-box" }} />
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#94a3b8", marginBottom: 5, textTransform: "uppercase", letterSpacing: 0.5 }}>Web App URL</label>
+              <input value={cfg.url} onChange={(e) => set("url", e.target.value)}
+                placeholder="https://script.google.com/macros/s/…/exec"
+                style={{ width: "100%", padding: "9px 14px", border: "1.5px solid #e2e8f0", borderRadius: 8, fontSize: 13, outline: "none", color: NAVY, boxSizing: "border-box" }} />
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => setSheetsCfg(cfg)} disabled={!canSave}
+              style={{ flex: 1, padding: "9px", borderRadius: 8, border: "none", background: canSave ? NAVY : "#e2e8f0", color: canSave ? "#fff" : "#aaa", cursor: canSave ? "pointer" : "not-allowed", fontWeight: 700, fontSize: 13 }}>
+              Save Config
+            </button>
+            <button onClick={() => { setSheetsCfg(cfg); onTestSync(); }} disabled={!canSave}
+              style={{ flex: 1, padding: "9px", borderRadius: 8, border: "none", background: canSave ? BRAND : "#e2e8f0", color: canSave ? "#fff" : "#aaa", cursor: canSave ? "pointer" : "not-allowed", fontWeight: 700, fontSize: 13 }}>
+              Test Sync Now
+            </button>
+          </div>
         </div>
       </div>
     </div>
