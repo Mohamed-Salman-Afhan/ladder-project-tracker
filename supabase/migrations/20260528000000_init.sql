@@ -12,14 +12,21 @@ create table if not exists public.projects (
 alter table public.projects enable row level security;
 
 -- Internal tool — open access (no auth required)
-create policy "open_access" on public.projects
-  for all using (true) with check (true);
+do $$ begin
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public' and tablename = 'projects' and policyname = 'open_access'
+  ) then
+    create policy "open_access" on public.projects
+      for all using (true) with check (true);
+  end if;
+end $$;
 
 -- Auto-update updated_at
 create or replace function public.set_updated_at()
 returns trigger language plpgsql as $$
 begin new.updated_at = now(); return new; end; $$;
 
-create trigger projects_updated_at
+create or replace trigger projects_updated_at
   before update on public.projects
   for each row execute function public.set_updated_at();
