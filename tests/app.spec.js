@@ -3,13 +3,13 @@ import { test, expect } from '@playwright/test';
 
 /**
  * Before each test:
- * 1. Abort Supabase API calls so the app falls back to localStorage (deterministic state)
- * 2. Clear localStorage so the app loads the built-in SAMPLE projects
+ * 1. Abort Supabase + Google Sheets requests via regex (glob pattern is unreliable for supabase.co)
+ * 2. Clear localStorage so the app starts from a clean slate (SAMPLE data loads)
  * 3. Navigate and wait for the loading spinner to disappear
  */
 test.beforeEach(async ({ page }) => {
-  await page.route('**/supabase.co/**', (route) => route.abort());
-  await page.route('**/script.google.com/**', (route) => route.abort());
+  await page.route(/supabase\.co/, (route) => route.abort());
+  await page.route(/script\.google\.com/, (route) => route.abort());
   await page.addInitScript(() => localStorage.clear());
   await page.goto('/');
   await expect(page.getByTestId('loading')).toBeHidden({ timeout: 15000 });
@@ -27,36 +27,53 @@ test('app loads with correct header and navigation tabs', async ({ page }) => {
 
 // ─── Dashboard ───────────────────────────────────────────────────────────────
 
-test('dashboard shows stats cards and project progress', async ({ page }) => {
-  // All five stat cards should be present
+test('dashboard shows all five stats cards', async ({ page }) => {
   for (const label of ['Total', 'In Progress', 'Completed', 'Not Started', 'On Hold']) {
     await expect(page.getByText(label).first()).toBeVisible();
   }
   await expect(page.getByText('Project Progress')).toBeVisible();
-  // Sample projects appear in the progress list
-  await expect(page.getByText('Propsense')).toBeVisible();
-  await expect(page.getByText('Sprint')).toBeVisible();
+});
+
+test('new project appears in dashboard progress list', async ({ page }) => {
+  const projectName = `DashProject_${Date.now()}`;
+
+  await page.getByTestId('btn-new').click();
+  await page.getByTestId('input-projectName').fill(projectName);
+  await page.getByTestId('input-clientName').fill('Dash Client');
+  await page.getByTestId('btn-save').click();
+  await expect(page.getByTestId('project-modal')).toBeHidden();
+
+  // Project should appear in the progress list on the dashboard
+  await expect(page.getByText(projectName)).toBeVisible();
 });
 
 // ─── Projects Tab ────────────────────────────────────────────────────────────
 
-test('projects tab shows search input, status filter, and sample projects', async ({ page }) => {
+test('projects tab shows search and filter controls', async ({ page }) => {
   await page.getByRole('button', { name: 'Projects' }).click();
   await expect(page.getByTestId('input-search')).toBeVisible();
   await expect(page.getByTestId('select-filter-status')).toBeVisible();
-  // All four sample projects should be listed
-  for (const name of ['Propsense', 'WTC', 'Crowntex', 'Sprint']) {
-    await expect(page.getByText(name)).toBeVisible();
-  }
+});
+
+test('projects tab shows created projects in the list', async ({ page }) => {
+  const projectName = `ListTest_${Date.now()}`;
+
+  await page.getByTestId('btn-new').click();
+  await page.getByTestId('input-projectName').fill(projectName);
+  await page.getByTestId('input-clientName').fill('List Client');
+  await page.getByTestId('btn-save').click();
+  await expect(page.getByTestId('project-modal')).toBeHidden();
+
+  await page.getByRole('button', { name: 'Projects' }).click();
+  await expect(page.locator('[data-testid^="project-card-"]').filter({ hasText: projectName })).toBeVisible();
 });
 
 // ─── Create Project ──────────────────────────────────────────────────────────
 
-test('creates a new project with required fields', async ({ page }) => {
+test('creates a new project with all fields', async ({ page }) => {
   const projectName = `TestProject_${Date.now()}`;
 
   await page.getByTestId('btn-new').click();
-
   const modal = page.getByTestId('project-modal');
   await expect(modal).toBeVisible();
   await expect(modal.getByText('New Project')).toBeVisible();
@@ -66,19 +83,17 @@ test('creates a new project with required fields', async ({ page }) => {
   await page.getByTestId('input-website').fill('https://acme.com');
 
   await page.getByTestId('btn-save').click();
-
-  // Modal closes after save
   await expect(modal).toBeHidden();
 
-  // New project appears on the dashboard progress list
+  // Appears in dashboard progress list
   await expect(page.getByText(projectName)).toBeVisible();
 
-  // Also present in the Projects tab
+  // Appears in Projects tab
   await page.getByRole('button', { name: 'Projects' }).click();
-  await expect(page.getByText(projectName)).toBeVisible();
+  await expect(page.locator('[data-testid^="project-card-"]').filter({ hasText: projectName })).toBeVisible();
 });
 
-test('create project with only minimum required fields (no website)', async ({ page }) => {
+test('creates a project without website (optional field)', async ({ page }) => {
   const projectName = `MinProject_${Date.now()}`;
 
   await page.getByTestId('btn-new').click();
@@ -94,11 +109,9 @@ test('create project with only minimum required fields (no website)', async ({ p
 
 test('shows alert when project name is missing', async ({ page }) => {
   await page.getByTestId('btn-new').click();
-
   const modal = page.getByTestId('project-modal');
   await expect(modal).toBeVisible();
 
-  // Fill only client name, leave project name empty
   await page.getByTestId('input-clientName').fill('Some Client');
 
   page.once('dialog', async (dialog) => {
@@ -107,19 +120,15 @@ test('shows alert when project name is missing', async ({ page }) => {
   });
 
   await page.getByTestId('btn-save').click();
-
-  // Modal must still be open after the alert
-  await expect(modal).toBeVisible();
+  await expect(modal).toBeVisible(); // modal stays open
 });
 
 test('shows alert when client name is missing', async ({ page }) => {
   await page.getByTestId('btn-new').click();
-
   const modal = page.getByTestId('project-modal');
   await expect(modal).toBeVisible();
 
   await page.getByTestId('input-projectName').fill('Some Project');
-  // Leave client name empty
 
   page.once('dialog', async (dialog) => {
     expect(dialog.message()).toMatch(/required/i);
@@ -127,13 +136,11 @@ test('shows alert when client name is missing', async ({ page }) => {
   });
 
   await page.getByTestId('btn-save').click();
-
   await expect(modal).toBeVisible();
 });
 
-test('shows alert when both required fields are missing', async ({ page }) => {
+test('shows alert when both required fields are empty', async ({ page }) => {
   await page.getByTestId('btn-new').click();
-
   const modal = page.getByTestId('project-modal');
   await expect(modal).toBeVisible();
 
@@ -143,7 +150,6 @@ test('shows alert when both required fields are missing', async ({ page }) => {
   });
 
   await page.getByTestId('btn-save').click();
-
   await expect(modal).toBeVisible();
 });
 
@@ -153,16 +159,15 @@ test('edits an existing project name', async ({ page }) => {
   const original = `EditMe_${Date.now()}`;
   const updated = `Edited_${Date.now()}`;
 
-  // Create a project first
+  // Create a project
   await page.getByTestId('btn-new').click();
   await page.getByTestId('input-projectName').fill(original);
   await page.getByTestId('input-clientName').fill('Edit Client');
   await page.getByTestId('btn-save').click();
   await expect(page.getByTestId('project-modal')).toBeHidden();
 
-  // Go to Projects tab and edit it
+  // Edit it from the Projects tab
   await page.getByRole('button', { name: 'Projects' }).click();
-
   const card = page.locator('[data-testid^="project-card-"]').filter({ hasText: original });
   await card.getByRole('button', { name: 'Edit' }).click();
 
@@ -170,7 +175,6 @@ test('edits an existing project name', async ({ page }) => {
   await expect(modal).toBeVisible();
   await expect(modal.getByText('Edit Project')).toBeVisible();
 
-  // Clear and re-type the project name
   const nameInput = page.getByTestId('input-projectName');
   await nameInput.clear();
   await nameInput.fill(updated);
@@ -181,24 +185,27 @@ test('edits an existing project name', async ({ page }) => {
   await expect(page.getByText(original)).not.toBeVisible();
 });
 
-test('edit project preserves stage data', async ({ page }) => {
-  await page.getByRole('button', { name: 'Projects' }).click();
+test('edit modal shows all four workflow stages', async ({ page }) => {
+  const projectName = `StagesTest_${Date.now()}`;
 
-  // Edit the first sample project (Propsense)
-  const card = page.locator('[data-testid^="project-card-"]').filter({ hasText: 'Propsense' });
+  await page.getByTestId('btn-new').click();
+  await page.getByTestId('input-projectName').fill(projectName);
+  await page.getByTestId('input-clientName').fill('Stage Client');
+  await page.getByTestId('btn-save').click();
+  await expect(page.getByTestId('project-modal')).toBeHidden();
+
+  await page.getByRole('button', { name: 'Projects' }).click();
+  const card = page.locator('[data-testid^="project-card-"]').filter({ hasText: projectName });
   await card.getByRole('button', { name: 'Edit' }).click();
 
   const modal = page.getByTestId('project-modal');
   await expect(modal).toBeVisible();
-
-  // Stage section should be visible with 4 stages
   await expect(modal.getByText('Workflow Stages')).toBeVisible();
-  await expect(modal.getByText('Questionnaire')).toBeVisible();
-  await expect(modal.getByText('Kickoff Meeting')).toBeVisible();
-  await expect(modal.getByText('UI/UX Design')).toBeVisible();
-  await expect(modal.getByText('Development')).toBeVisible();
 
-  // Cancel without changing anything
+  for (const stage of ['Questionnaire', 'Kickoff Meeting', 'UI/UX Design', 'Development']) {
+    await expect(modal.getByText(stage)).toBeVisible();
+  }
+
   await page.getByTestId('btn-cancel-modal').click();
   await expect(modal).toBeHidden();
 });
@@ -208,7 +215,6 @@ test('edit project preserves stage data', async ({ page }) => {
 test('deletes a project after confirmation', async ({ page }) => {
   const projectName = `ToDelete_${Date.now()}`;
 
-  // Create a project to delete
   await page.getByTestId('btn-new').click();
   await page.getByTestId('input-projectName').fill(projectName);
   await page.getByTestId('input-clientName').fill('Delete Client');
@@ -216,103 +222,155 @@ test('deletes a project after confirmation', async ({ page }) => {
   await expect(page.getByTestId('project-modal')).toBeHidden();
 
   await page.getByRole('button', { name: 'Projects' }).click();
-
   const card = page.locator('[data-testid^="project-card-"]').filter({ hasText: projectName });
   await card.getByRole('button', { name: 'Delete' }).click();
 
-  // Confirm dialog appears
   await expect(page.getByText('Delete Project?')).toBeVisible();
   await expect(page.getByText('This cannot be undone.')).toBeVisible();
 
   await page.getByTestId('btn-confirm-delete').click();
 
-  // Project is gone
   await expect(page.getByText(projectName)).not.toBeVisible();
   await expect(page.getByText('Delete Project?')).toBeHidden();
 });
 
 test('cancel delete keeps the project', async ({ page }) => {
-  await page.getByRole('button', { name: 'Projects' }).click();
+  // Create our own project — do not rely on SAMPLE data
+  const projectName = `KeepMe_${Date.now()}`;
 
-  // Target the Propsense sample project
-  const card = page.locator('[data-testid^="project-card-"]').filter({ hasText: 'Propsense' });
+  await page.getByTestId('btn-new').click();
+  await page.getByTestId('input-projectName').fill(projectName);
+  await page.getByTestId('input-clientName').fill('Keep Client');
+  await page.getByTestId('btn-save').click();
+  await expect(page.getByTestId('project-modal')).toBeHidden();
+
+  await page.getByRole('button', { name: 'Projects' }).click();
+  const card = page.locator('[data-testid^="project-card-"]').filter({ hasText: projectName });
   await card.getByRole('button', { name: 'Delete' }).click();
 
   await expect(page.getByText('Delete Project?')).toBeVisible();
-
-  // Cancel the deletion
   await page.getByTestId('btn-cancel-delete').click();
 
-  // Dialog closes, project is still there
   await expect(page.getByText('Delete Project?')).toBeHidden();
-  await expect(page.getByText('Propsense')).toBeVisible();
+  await expect(page.getByText(projectName)).toBeVisible();
 });
 
 // ─── Search & Filter ─────────────────────────────────────────────────────────
 
 test('search filters projects by project name', async ({ page }) => {
+  const targetName = `SearchTarget_${Date.now()}`;
+  const otherName = `SearchOther_${Date.now()}`;
+
+  for (const [name, client] of [[targetName, 'Client A'], [otherName, 'Client B']]) {
+    await page.getByTestId('btn-new').click();
+    await page.getByTestId('input-projectName').fill(name);
+    await page.getByTestId('input-clientName').fill(client);
+    await page.getByTestId('btn-save').click();
+    await expect(page.getByTestId('project-modal')).toBeHidden();
+  }
+
   await page.getByRole('button', { name: 'Projects' }).click();
+  await page.getByTestId('input-search').fill(targetName);
 
-  await page.getByTestId('input-search').fill('Propsense');
-
-  await expect(page.getByText('Propsense')).toBeVisible();
-  await expect(page.getByText('WTC')).not.toBeVisible();
-  await expect(page.getByText('Crowntex')).not.toBeVisible();
-  await expect(page.getByText('Sprint')).not.toBeVisible();
+  await expect(page.locator('[data-testid^="project-card-"]').filter({ hasText: targetName })).toBeVisible();
+  await expect(page.locator('[data-testid^="project-card-"]').filter({ hasText: otherName })).not.toBeVisible();
 });
 
 test('search filters projects by client name', async ({ page }) => {
+  const uniqueClient = `UniqueClient_${Date.now()}`;
+  const matchProject = `MatchProject_${Date.now()}`;
+  const noMatchProject = `NoMatchProject_${Date.now()}`;
+
+  for (const [name, client] of [[matchProject, uniqueClient], [noMatchProject, 'OtherCorp']]) {
+    await page.getByTestId('btn-new').click();
+    await page.getByTestId('input-projectName').fill(name);
+    await page.getByTestId('input-clientName').fill(client);
+    await page.getByTestId('btn-save').click();
+    await expect(page.getByTestId('project-modal')).toBeHidden();
+  }
+
   await page.getByRole('button', { name: 'Projects' }).click();
+  await page.getByTestId('input-search').fill(uniqueClient);
 
-  // WTC sample project has clientName "WTC"
-  await page.getByTestId('input-search').fill('WTC');
-
-  await expect(page.getByText('WTC')).toBeVisible();
-  await expect(page.getByText('Propsense')).not.toBeVisible();
+  await expect(page.locator('[data-testid^="project-card-"]').filter({ hasText: matchProject })).toBeVisible();
+  await expect(page.locator('[data-testid^="project-card-"]').filter({ hasText: noMatchProject })).not.toBeVisible();
 });
 
-test('search shows no results message for unmatched query', async ({ page }) => {
+test('search shows "No projects found" for unmatched query', async ({ page }) => {
   await page.getByRole('button', { name: 'Projects' }).click();
-
   await page.getByTestId('input-search').fill('ZZZNOMATCH999XYZ');
-
   await expect(page.getByText('No projects found.')).toBeVisible();
 });
 
 test('clearing search restores all projects', async ({ page }) => {
-  await page.getByRole('button', { name: 'Projects' }).click();
+  const projectA = `ClearA_${Date.now()}`;
+  const projectB = `ClearB_${Date.now()}`;
 
+  for (const [name, client] of [[projectA, 'Client A'], [projectB, 'Client B']]) {
+    await page.getByTestId('btn-new').click();
+    await page.getByTestId('input-projectName').fill(name);
+    await page.getByTestId('input-clientName').fill(client);
+    await page.getByTestId('btn-save').click();
+    await expect(page.getByTestId('project-modal')).toBeHidden();
+  }
+
+  await page.getByRole('button', { name: 'Projects' }).click();
   const searchInput = page.getByTestId('input-search');
-  await searchInput.fill('Propsense');
-  await expect(page.getByText('WTC')).not.toBeVisible();
+
+  await searchInput.fill(projectA);
+  await expect(page.locator('[data-testid^="project-card-"]').filter({ hasText: projectB })).not.toBeVisible();
 
   await searchInput.clear();
-  await expect(page.getByText('Propsense')).toBeVisible();
-  await expect(page.getByText('WTC')).toBeVisible();
-  await expect(page.getByText('Crowntex')).toBeVisible();
-  await expect(page.getByText('Sprint')).toBeVisible();
+  await expect(page.locator('[data-testid^="project-card-"]').filter({ hasText: projectA })).toBeVisible();
+  await expect(page.locator('[data-testid^="project-card-"]').filter({ hasText: projectB })).toBeVisible();
 });
 
-test('status filter shows only matching projects', async ({ page }) => {
-  await page.getByRole('button', { name: 'Projects' }).click();
+test('status filter shows only matching-status projects', async ({ page }) => {
+  const completedName = `Completed_${Date.now()}`;
+  const inProgressName = `InProg_${Date.now()}`;
 
-  // Sprint is the only Completed project in SAMPLE data
+  // Create a Completed project
+  await page.getByTestId('btn-new').click();
+  await page.getByTestId('input-projectName').fill(completedName);
+  await page.getByTestId('input-clientName').fill('Comp Client');
+  // Overall Status is the first <select> inside the modal
+  await page.getByTestId('project-modal').locator('select').first().selectOption('Completed');
+  await page.getByTestId('btn-save').click();
+  await expect(page.getByTestId('project-modal')).toBeHidden();
+
+  // Create an In Progress project
+  await page.getByTestId('btn-new').click();
+  await page.getByTestId('input-projectName').fill(inProgressName);
+  await page.getByTestId('input-clientName').fill('IP Client');
+  await page.getByTestId('project-modal').locator('select').first().selectOption('In Progress');
+  await page.getByTestId('btn-save').click();
+  await expect(page.getByTestId('project-modal')).toBeHidden();
+
+  await page.getByRole('button', { name: 'Projects' }).click();
   await page.getByTestId('select-filter-status').selectOption('Completed');
-  await expect(page.getByText('Sprint')).toBeVisible();
-  await expect(page.getByText('Propsense')).not.toBeVisible();
-  await expect(page.getByText('WTC')).not.toBeVisible();
+
+  await expect(page.locator('[data-testid^="project-card-"]').filter({ hasText: completedName })).toBeVisible();
+  await expect(page.locator('[data-testid^="project-card-"]').filter({ hasText: inProgressName })).not.toBeVisible();
 });
 
-test('status filter "All" shows every project', async ({ page }) => {
-  await page.getByRole('button', { name: 'Projects' }).click();
+test('status filter "All" shows all projects', async ({ page }) => {
+  const projectA = `AllA_${Date.now()}`;
+  const projectB = `AllB_${Date.now()}`;
 
-  // Apply a filter then reset it
+  for (const [name, client] of [[projectA, 'Client A'], [projectB, 'Client B']]) {
+    await page.getByTestId('btn-new').click();
+    await page.getByTestId('input-projectName').fill(name);
+    await page.getByTestId('input-clientName').fill(client);
+    await page.getByTestId('btn-save').click();
+    await expect(page.getByTestId('project-modal')).toBeHidden();
+  }
+
+  await page.getByRole('button', { name: 'Projects' }).click();
   await page.getByTestId('select-filter-status').selectOption('Completed');
   await page.getByTestId('select-filter-status').selectOption('All');
 
-  for (const name of ['Propsense', 'WTC', 'Crowntex', 'Sprint']) {
-    await expect(page.getByText(name)).toBeVisible();
-  }
+  await expect(page.locator('[data-testid^="project-card-"]').filter({ hasText: projectA })).toBeVisible();
+  await expect(page.locator('[data-testid^="project-card-"]').filter({ hasText: projectB })).toBeVisible();
 });
 
 // ─── Modal Controls ──────────────────────────────────────────────────────────
@@ -321,7 +379,6 @@ test('closes modal with the × button', async ({ page }) => {
   await page.getByTestId('btn-new').click();
   const modal = page.getByTestId('project-modal');
   await expect(modal).toBeVisible();
-
   await modal.getByRole('button', { name: '×' }).click();
   await expect(modal).toBeHidden();
 });
@@ -330,7 +387,6 @@ test('closes modal with the Cancel button', async ({ page }) => {
   await page.getByTestId('btn-new').click();
   const modal = page.getByTestId('project-modal');
   await expect(modal).toBeVisible();
-
   await page.getByTestId('btn-cancel-modal').click();
   await expect(modal).toBeHidden();
 });
@@ -340,29 +396,24 @@ test('closes modal with the Cancel button', async ({ page }) => {
 test('team tab shows all initial members', async ({ page }) => {
   await page.getByRole('button', { name: 'Team' }).click();
   await expect(page.getByText('Team Members')).toBeVisible();
-
   for (const member of ['Pasindu', 'Shamam', 'Salman', 'Janith']) {
     await expect(page.getByText(member, { exact: true })).toBeVisible();
   }
 });
 
-test('adds a new team member', async ({ page }) => {
+test('adds a new team member via Add button', async ({ page }) => {
   await page.getByRole('button', { name: 'Team' }).click();
-
   const newMember = `Member_${Date.now()}`;
   await page.getByTestId('input-team-name').fill(newMember);
   await page.getByTestId('btn-add-team').click();
-
   await expect(page.getByText(newMember, { exact: true })).toBeVisible();
 });
 
 test('adds a team member by pressing Enter', async ({ page }) => {
   await page.getByRole('button', { name: 'Team' }).click();
-
   const newMember = `EnterMember_${Date.now()}`;
   await page.getByTestId('input-team-name').fill(newMember);
   await page.getByTestId('input-team-name').press('Enter');
-
   await expect(page.getByText(newMember, { exact: true })).toBeVisible();
 });
 
@@ -377,18 +428,16 @@ test('prevents adding a duplicate team member', async ({ page }) => {
   await page.getByTestId('input-team-name').fill('Pasindu');
   await page.getByTestId('btn-add-team').click();
 
-  // Exactly one element with text "Pasindu"
   await expect(page.getByText('Pasindu', { exact: true })).toHaveCount(1);
 });
 
-test('prevents adding an empty team member name', async ({ page }) => {
+test('prevents adding an empty name', async ({ page }) => {
   await page.getByRole('button', { name: 'Team' }).click();
 
-  const countBefore = await page.locator('[data-testid="input-team-name"]').count();
-  // Click Add with empty input — should do nothing
+  // Click Add with no text — should do nothing (no dialog, no new member)
   await page.getByTestId('btn-add-team').click();
 
-  // Still the same 4 original members (count didn't increase)
+  // Original 4 members still present
   await expect(page.getByText('Pasindu', { exact: true })).toHaveCount(1);
   await expect(page.getByText('Janith', { exact: true })).toHaveCount(1);
 });
@@ -396,20 +445,18 @@ test('prevents adding an empty team member name', async ({ page }) => {
 test('removes a team member after confirmation', async ({ page }) => {
   await page.getByRole('button', { name: 'Team' }).click();
 
-  // Add a temporary member so we do not remove a member used by sample projects
+  // Add a temporary member — it will be the LAST in the list
   const tempMember = `Temp_${Date.now()}`;
   await page.getByTestId('input-team-name').fill(tempMember);
   await page.getByTestId('btn-add-team').click();
   await expect(page.getByText(tempMember, { exact: true })).toBeVisible();
 
-  // Handle the window.confirm dialog
   page.once('dialog', async (dialog) => {
-    await dialog.accept();
+    await dialog.accept(); // confirm removal
   });
 
-  // Find that member's row and click Remove
-  const memberRow = page.locator('div').filter({ hasText: new RegExp(`^${tempMember}$`) }).first();
-  await memberRow.getByRole('button', { name: 'Remove' }).click();
+  // The newly-added member is last, so its Remove button is last
+  await page.getByRole('button', { name: 'Remove' }).last().click();
 
   await expect(page.getByText(tempMember, { exact: true })).not.toBeVisible();
 });
@@ -418,12 +465,11 @@ test('cancels removing a team member', async ({ page }) => {
   await page.getByRole('button', { name: 'Team' }).click();
 
   page.once('dialog', async (dialog) => {
-    await dialog.dismiss(); // Cancel
+    await dialog.dismiss(); // cancel removal
   });
 
-  const memberRow = page.locator('div').filter({ hasText: /^Pasindu$/ }).first();
-  await memberRow.getByRole('button', { name: 'Remove' }).click();
+  // Pasindu is first in INIT_TEAM, so its Remove button is first
+  await page.getByRole('button', { name: 'Remove' }).first().click();
 
-  // Member should still be there
   await expect(page.getByText('Pasindu', { exact: true })).toBeVisible();
 });
