@@ -24,36 +24,6 @@ const mkStage = (n) => ({ name: n, assignee: "", startDate: "", endDate: "", sta
 const mkProject = () => ({ id: crypto.randomUUID(), projectName: "", clientName: "", website: "", status: "Not Started", stages: STAGES.map(mkStage) });
 const stagePct = (s) => Math.round(s.filter((x) => x.status === "Completed").length / s.length * 100);
 
-const SAMPLE = [
-  { id: "sample-1", projectName: "Propsense", clientName: "Propsense", website: "", status: "In Progress",
-    stages: [
-      { name: "Questionnaire",   assignee: "",        startDate: "", endDate: "",           status: "Completed",   notes: "" },
-      { name: "Kickoff Meeting", assignee: "",        startDate: "", endDate: "",           status: "Completed",   notes: "" },
-      { name: "UI/UX Design",    assignee: "Pasindu", startDate: "", endDate: "",           status: "On Hold",     notes: "UI done. Waiting for client response." },
-      { name: "Development",     assignee: "",        startDate: "", endDate: "",           status: "Not Started", notes: "" },
-    ]},
-  { id: "sample-2", projectName: "WTC", clientName: "WTC", website: "", status: "In Progress",
-    stages: [
-      { name: "Questionnaire",   assignee: "Shamam", startDate: "",           endDate: "2026-05-26", status: "Completed",   notes: "Website copy ready." },
-      { name: "Kickoff Meeting", assignee: "Shamam", startDate: "2026-05-27", endDate: "2026-05-27", status: "In Progress", notes: "Meeting today — Shamam & Salman attending." },
-      { name: "UI/UX Design",    assignee: "",       startDate: "",           endDate: "",           status: "Not Started", notes: "" },
-      { name: "Development",     assignee: "",       startDate: "",           endDate: "",           status: "Not Started", notes: "" },
-    ]},
-  { id: "sample-3", projectName: "Crowntex", clientName: "Crowntex", website: "", status: "In Progress",
-    stages: [
-      { name: "Questionnaire",   assignee: "Janith", startDate: "", endDate: "", status: "In Progress", notes: "Questionnaire sent. Waiting for client response." },
-      { name: "Kickoff Meeting", assignee: "",       startDate: "", endDate: "", status: "Not Started", notes: "" },
-      { name: "UI/UX Design",    assignee: "",       startDate: "", endDate: "", status: "Not Started", notes: "" },
-      { name: "Development",     assignee: "",       startDate: "", endDate: "", status: "Not Started", notes: "" },
-    ]},
-  { id: "sample-4", projectName: "Sprint", clientName: "Sprint", website: "", status: "Completed",
-    stages: [
-      { name: "Questionnaire",   assignee: "",       startDate: "", endDate: "",           status: "Completed", notes: "" },
-      { name: "Kickoff Meeting", assignee: "",       startDate: "", endDate: "",           status: "Completed", notes: "" },
-      { name: "UI/UX Design",    assignee: "",       startDate: "", endDate: "",           status: "Completed", notes: "" },
-      { name: "Development",     assignee: "Salman", startDate: "", endDate: "2026-05-27", status: "Completed", notes: "Development completed by Salman." },
-    ]},
-];
 
 /* ─── Responsive hook ───────────────────────────────────────── */
 function useBreakpoint() {
@@ -366,7 +336,7 @@ export default function App() {
       // localStorage fallback
       try {
         const saved = JSON.parse(localStorage.getItem("ladder_projects"));
-        setProjects(saved || SAMPLE);
+        setProjects(saved || []);
       } catch { setProjects(SAMPLE); }
       setLoading(false);
     };
@@ -382,8 +352,16 @@ export default function App() {
   const syncSheets = useCallback(async (ps) => {
     if (!sheetsCfg.url || !sheetsCfg.secret) return;
     try {
-      const payload = { secret: sheetsCfg.secret, projects: ps.map((p) => ({ ...p, progress: stagePct(p.stages) })) };
-      const res = await fetch(sheetsCfg.url, { method: "POST", body: JSON.stringify(payload) });
+      const payload = {
+        url: sheetsCfg.url,
+        secret: sheetsCfg.secret,
+        projects: ps.map((p) => ({ ...p, progress: stagePct(p.stages) })),
+      };
+      const res = await fetch("/api/sync-sheets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
       const data = await res.json();
       setSyncStatus({ ok: data.ok, msg: data.error || "" });
     } catch (e) { setSyncStatus({ ok: false, msg: e.message }); }
@@ -492,7 +470,7 @@ export default function App() {
           {/* Top row */}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", height: isMobile ? 56 : 62 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <img src="/logo.svg" alt="Ladder Global" style={{ height: isMobile ? 22 : 28, filter: "brightness(0) invert(1)" }} onError={(e) => { e.target.style.display = "none"; }} />
+              <img src="/logo.svg" alt="Ladder Global" style={{ height: isMobile ? 22 : 28}} onError={(e) => { e.target.style.display = "none"; }} />
               <div style={{ width: 1, height: 20, background: "#ffffff33" }} />
               <div>
                 <div style={{ fontWeight: 800, fontSize: isMobile ? 13 : 14, color: "#fff", letterSpacing: 0.2 }}>Project Tracker</div>
