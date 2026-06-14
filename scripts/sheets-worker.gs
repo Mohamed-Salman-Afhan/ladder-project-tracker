@@ -2,220 +2,268 @@
 // Deploy as Web App: Execute as → Me | Who has access → Anyone
 // Re-deploy after any change: Deploy → Manage deployments → Edit → New version → Deploy
 //
-// Payload sent by the app (src/App.jsx → syncSheets):
-//   { secret, projects: [ { projectName, clientName, website, status, progress,
-//                           stages: [ { status, assignee }, …4 ] } ],
-//            timeline: [ { project, client, stage, assignee, startDate, endDate,
-//                          durationDays, status, notes } ] }
-// ────────────────────────────────────────────────────────────
+// Payload from the app (src/App.jsx → syncSheets):
+//   { secret,
+//     projects: [ { projectName, clientName, website, status, progress,
+//                   stages:[{status,assignee}] } ],            // tracker tab
+//     tree: [ { project, client, status, progress,
+//               mains:[ { name, assignee, startDate, endDate, durationDays,
+//                         status, notes, subs:[ {…same…} ] } ] } ] }  // Timeline + Gantt
+//
+// Timeline & Gantt group by project: the project name appears once as a header
+// row, with its stages nested under it and sub-tasks nested one level deeper
+// (native Google Sheets collapsible row groups).
 
 const SECRET = "lg-web-project-tracker-2026";
 const SPREADSHEET_ID = "1bgvc5kE8ELx_xg9APYfsHIY1_9bh7zl34lPJ-K-uQvM";
 const PROJECTS_SHEET = "Website-Project-Tracker";
 const TIMELINE_SHEET = "Timeline";
-const GANTT_SHEET    = "Gantt";
+const GANTT_SHEET = "Gantt";
+
+const NAVY = "#1E3A5F";
+const PROJECT_BG = "#1E3A5F";
+const MAIN_BG = "#EEF2F7";
+const SUB_BG = "#F8FAFC";
+const STAGE_COLORS = {
+  "Questionnaire": "#FF5050",
+  "Kickoff Meeting": "#3B82F6",
+  "UI/UX Design": "#8B5CF6",
+  "Development": "#22C55E",
+};
 
 function doPost(e) {
   try {
     const data = JSON.parse(e.postData.contents);
-
-    if (data.secret !== SECRET) {
-      return json({ ok: false, error: "Unauthorized" });
-    }
+    if (data.secret !== SECRET) return json({ ok: false, error: "Unauthorized" });
 
     const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const errors = [];
+    const tree = Array.isArray(data.tree) ? data.tree : [];
 
-    // ── Projects sheet ──────────────────────────────────────
-    let pSheet = getOrCreate(ss, PROJECTS_SHEET);
-    const pHeaders = [
-      "Project", "Client", "Website", "Status", "Progress %",
-      "Questionnaire", "Q Assignee",
-      "Kickoff Meeting", "KM Assignee",
-      "UI/UX Design", "UI Assignee",
-      "Development", "Dev Assignee", "Last Updated"
-    ];
-    pSheet.clear();
-    pSheet.appendRow(pHeaders);
-    styleHeader(pSheet, pHeaders.length, "FF5050");
+    try { buildProjects(ss, data.projects || []); } catch (err) { errors.push("projects: " + err.message); }
+    try { buildTimeline(ss, tree); } catch (err) { errors.push("timeline: " + err.message); }
+    try { buildGantt(ss, tree); } catch (err) { errors.push("gantt: " + err.message); }
 
-    (data.projects || []).forEach(p => {
-      const s = p.stages || [];
-      pSheet.appendRow([
-        p.projectName, p.clientName, p.website || "", p.status, (p.progress || 0) + "%",
-        s[0]?.status || "", s[0]?.assignee || "",
-        s[1]?.status || "", s[1]?.assignee || "",
-        s[2]?.status || "", s[2]?.assignee || "",
-        s[3]?.status || "", s[3]?.assignee || "",
-        new Date().toLocaleString()
-      ]);
-    });
-    pSheet.autoResizeColumns(1, pHeaders.length);
-
-    // ── Timeline sheet ──────────────────────────────────────
-    const timelineRows = data.timeline || [];
-    let tSheet = getOrCreate(ss, TIMELINE_SHEET);
-    const tHeaders = [
-      "Project", "Client", "Stage", "Assignee",
-      "Start Date", "End Date", "Duration (Days)", "Status", "Notes"
-    ];
-    tSheet.clear(); // clear() (not clearContents) so stale status colours are wiped
-    tSheet.appendRow(tHeaders);
-    styleHeader(tSheet, tHeaders.length, "1E3A5F");
-
-    timelineRows.forEach(r => {
-      tSheet.appendRow([
-        r.project || "", r.client || "", r.stage || "", r.assignee || "",
-        r.startDate || "", r.endDate || "",
-        r.durationDays != null && r.durationDays !== "" ? Number(r.durationDays) : "",
-        r.status || "", r.notes || ""
-      ]);
-    });
-
-    // Colour-code Status column (col 8)
-    timelineRows.forEach((r, i) => {
-      const bg = statusColor(r.status);
-      if (bg) tSheet.getRange(i + 2, 8).setBackground(bg).setFontColor("#ffffff");
-    });
-    tSheet.autoResizeColumns(1, tHeaders.length);
-
-    // ── Gantt sheet ─────────────────────────────────────────
-    const dated = timelineRows.filter(r => r.startDate && r.endDate);
-    if (dated.length > 0) {
-      buildGanttSheet(ss, dated);
-    } else {
-      // No dated stages — clear any stale chart so it doesn't show old bars
-      const g = ss.getSheetByName(GANTT_SHEET);
-      if (g) { g.clearContents(); g.clearFormats(); }
-    }
-
-    return json({ ok: true });
-
+    return json(errors.length ? { ok: false, error: errors.join(" | ") } : { ok: true });
   } catch (err) {
-    return json({ ok: false, error: err.toString() });
+    return json({ ok: false, error: err.message });
   }
 }
 
-// ── Gantt builder ────────────────────────────────────────────
-
-function buildGanttSheet(ss, rows) {
-  const STAGE_COLORS = {
-    "Questionnaire":   "#FF5050",
-    "Kickoff Meeting": "#3B82F6",
-    "UI/UX Design":    "#8B5CF6",
-    "Development":     "#22C55E"
-  };
-
-  const tz = Session.getScriptTimeZone();
-  const toDay = str => { const d = new Date(str); d.setHours(0,0,0,0); return d; };
-
-  const allDates = rows.flatMap(r => [toDay(r.startDate), toDay(r.endDate)]);
-  const minDate  = new Date(Math.min(...allDates.map(d => d.getTime())));
-  const maxDate  = new Date(Math.max(...allDates.map(d => d.getTime())));
-  const totalDays = Math.min(Math.round((maxDate - minDate) / 86400000) + 1, 365);
-
-  let gSheet = ss.getSheetByName(GANTT_SHEET);
-  if (!gSheet) gSheet = ss.insertSheet(GANTT_SHEET);
-  gSheet.clearContents();
-  gSheet.clearFormats();
-
-  // A sheet defaults to 26 columns / 1000 rows. The day grid needs one column
-  // per day (up to 365) plus 4 label columns — grow the sheet first, otherwise
-  // setColumnWidth/setValues throw "out of bounds" for wide date ranges.
-  const neededCols = 4 + totalDays;
-  if (gSheet.getMaxColumns() < neededCols) {
-    gSheet.insertColumnsAfter(gSheet.getMaxColumns(), neededCols - gSheet.getMaxColumns());
-  }
-  const neededRows = rows.length + 1;
-  if (gSheet.getMaxRows() < neededRows) {
-    gSheet.insertRowsAfter(gSheet.getMaxRows(), neededRows - gSheet.getMaxRows());
-  }
-
-  // Fixed column widths
-  gSheet.setColumnWidth(1, 150);  // Project
-  gSheet.setColumnWidth(2, 130);  // Stage
-  gSheet.setColumnWidth(3, 110);  // Assignee
-  gSheet.setColumnWidth(4, 100);  // Status
-  for (let c = 5; c <= 4 + totalDays; c++) gSheet.setColumnWidth(c, 28);
-
-  // Header row
-  const headerVals = [["Project", "Stage", "Assignee", "Status"]];
-  for (let i = 0; i < totalDays; i++) {
-    const d = new Date(minDate.getTime() + i * 86400000);
-    headerVals[0].push(Utilities.formatDate(d, tz, "d-MMM"));
-  }
-  gSheet.getRange(1, 1, 1, headerVals[0].length).setValues(headerVals);
-  styleHeader(gSheet, headerVals[0].length, "1E3A5F");
-
-  // Today marker
-  const today = new Date(); today.setHours(0,0,0,0);
-  const todayOff = Math.round((today - minDate) / 86400000);
-  if (todayOff >= 0 && todayOff < totalDays) {
-    gSheet.getRange(1, 5 + todayOff)
-      .setBackground("#FF5050")
-      .setFontColor("#FFFFFF");
-  }
-
-  // Data rows + bars
-  rows.forEach((r, idx) => {
-    const rowNum = idx + 2;
-    gSheet.getRange(rowNum, 1, 1, 4).setValues([[
-      r.project || "", r.stage || "", r.assignee || "", r.status || ""
-    ]]);
-
-    const start = toDay(r.startDate);
-    const end   = toDay(r.endDate);
-    const startOff = Math.round((start - minDate) / 86400000);
-    const endOff   = Math.round((end   - minDate) / 86400000);
-    const clampedEnd = Math.min(endOff, totalDays - 1);
-
-    if (startOff <= clampedEnd && startOff < totalDays) {
-      const color = STAGE_COLORS[r.stage] || "#60A5FA";
-      gSheet.getRange(rowNum, 5 + startOff, 1, clampedEnd - startOff + 1)
-        .setBackground(color);
-    }
-  });
-
-  // Alternate row shading for readability
-  rows.forEach((_, idx) => {
-    if (idx % 2 === 1) {
-      gSheet.getRange(idx + 2, 1, 1, 4)
-        .setBackground("#F8F9FA");
-    }
-  });
-
-  gSheet.setFrozenRows(1);
-  gSheet.setFrozenColumns(4);
-}
-
-// ── Helpers ──────────────────────────────────────────────────
-
-function getOrCreate(ss, name) {
-  let sheet = ss.getSheetByName(name);
-  if (!sheet) sheet = ss.insertSheet(name);
-  return sheet;
-}
+/* ── helpers ─────────────────────────────────────────────────── */
 
 function json(obj) {
-  return ContentService
-    .createTextOutput(JSON.stringify(obj))
-    .setMimeType(ContentService.MimeType.JSON);
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
 }
 
-function styleHeader(sheet, colCount, hexBg) {
-  sheet.getRange(1, 1, 1, colCount)
-    .setFontWeight("bold")
-    .setBackground("#" + hexBg)
-    .setFontColor("#FFFFFF");
+function getTab(ss, name) {
+  return ss.getSheetByName(name) || ss.insertSheet(name);
 }
 
-function statusColor(status) {
+// Delete + recreate so old row groups / formatting don't accumulate.
+function freshTab(ss, name) {
+  const old = ss.getSheetByName(name);
+  if (old) ss.deleteSheet(old);
+  return ss.insertSheet(name);
+}
+
+function fmtDate(d) {
+  if (!d) return "";
+  const dt = new Date(d);
+  if (isNaN(dt)) return d;
+  return Utilities.formatDate(dt, Session.getScriptTimeZone(), "yyyy-MM-dd");
+}
+
+function statusBg(status) {
   switch ((status || "").toLowerCase()) {
     case "complete":
-    case "completed":    return "#16A34A";
-    case "in progress":  return "#2563EB";
-    case "not started":  return "#6B7280";
-    case "blocked":
-    case "on hold":      return "#DC2626";
-    default:             return null;
+    case "completed": return "#DCFCE7";
+    case "in progress": return "#DBEAFE";
+    case "on hold":
+    case "blocked": return "#FEE2E2";
+    default: return null;
   }
+}
+
+/* ── Website Project Tracker: one row per project ────────────── */
+
+function buildProjects(ss, projects) {
+  const sh = getTab(ss, PROJECTS_SHEET);
+  const header = [
+    "Project", "Client", "Website", "Status", "Progress %",
+    "Questionnaire", "Q Assignee", "Kickoff Meeting", "KM Assignee",
+    "UI/UX Design", "UI Assignee", "Development", "Dev Assignee", "Last Updated",
+  ];
+  sh.clear();
+  const now = new Date().toLocaleString();
+  const rows = [header];
+  projects.forEach((p) => {
+    const s = p.stages || [];
+    rows.push([
+      p.projectName, p.clientName, p.website || "", p.status, (p.progress || 0) + "%",
+      s[0] && s[0].status || "", s[0] && s[0].assignee || "",
+      s[1] && s[1].status || "", s[1] && s[1].assignee || "",
+      s[2] && s[2].status || "", s[2] && s[2].assignee || "",
+      s[3] && s[3].status || "", s[3] && s[3].assignee || "",
+      now,
+    ]);
+  });
+  sh.getRange(1, 1, rows.length, header.length).setValues(rows);
+  sh.getRange(1, 1, 1, header.length).setFontWeight("bold").setBackground(NAVY).setFontColor("#ffffff");
+  sh.setFrozenRows(1);
+  sh.autoResizeColumns(1, header.length);
+}
+
+/* ── Timeline: grouped by project, collapsible ───────────────── */
+
+function buildTimeline(ss, tree) {
+  const sh = freshTab(ss, TIMELINE_SHEET);
+  const header = ["Project / Stage / Task", "Assignee", "Start", "End", "Duration (Days)", "Status", "Notes"];
+  const W = header.length;
+
+  const rows = [header];
+  const blocks = [];        // { taskStart, taskEnd, subBlocks:[{start,end}] } (0-based row indexes)
+  const projectRows = [];   // 0-based indexes of project header rows
+  const statusCells = [];   // { row, status }
+
+  tree.forEach((p) => {
+    projectRows.push(rows.length);
+    rows.push([p.project + (p.progress != null ? "   ·   " + p.progress + "%" : ""), "", "", "", "", p.status || "", ""]);
+    const taskStart = rows.length;
+    const subBlocks = [];
+    (p.mains || []).forEach((m) => {
+      rows.push(["    " + m.name, m.assignee, fmtDate(m.startDate), fmtDate(m.endDate), m.durationDays || "", m.status, m.notes]);
+      statusCells.push({ row: rows.length - 1, status: m.status });
+      if (m.subs && m.subs.length) {
+        const start = rows.length;
+        m.subs.forEach((s) => {
+          rows.push(["        ↳ " + s.name, s.assignee, fmtDate(s.startDate), fmtDate(s.endDate), s.durationDays || "", s.status, s.notes]);
+          statusCells.push({ row: rows.length - 1, status: s.status });
+        });
+        subBlocks.push({ start: start, end: rows.length - 1 });
+      }
+    });
+    if (rows.length - 1 >= taskStart) blocks.push({ taskStart: taskStart, taskEnd: rows.length - 1, subBlocks: subBlocks });
+  });
+
+  sh.getRange(1, 1, rows.length, W).setValues(rows.map((r) => { const a = r.slice(); while (a.length < W) a.push(""); return a; }));
+  sh.getRange(1, 1, 1, W).setFontWeight("bold").setBackground(NAVY).setFontColor("#ffffff");
+  sh.setFrozenRows(1);
+  sh.setColumnWidth(1, 300);
+  for (let c = 2; c <= W; c++) sh.autoResizeColumn(c);
+
+  // project header rows
+  projectRows.forEach((r) => {
+    sh.getRange(r + 1, 1, 1, W).setBackground(PROJECT_BG).setFontColor("#ffffff").setFontWeight("bold");
+  });
+  // status cell tint
+  statusCells.forEach((sc) => { const bg = statusBg(sc.status); if (bg) sh.getRange(sc.row + 1, 6).setBackground(bg); });
+
+  // collapsible groups: tasks under project, subs under their main
+  sh.setRowGroupControlAfter(false);
+  blocks.forEach((b) => {
+    sh.getRange(b.taskStart + 1, 1, b.taskEnd - b.taskStart + 1, 1).shiftRowGroupDepth(1);
+    b.subBlocks.forEach((sb) => sh.getRange(sb.start + 1, 1, sb.end - sb.start + 1, 1).shiftRowGroupDepth(1));
+  });
+}
+
+/* ── Gantt: grouped by project, day grid with colour-coded bars ─ */
+
+function buildGantt(ss, tree) {
+  const sh = freshTab(ss, GANTT_SHEET);
+  const toDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
+
+  const dated = [];
+  tree.forEach((p) => (p.mains || []).forEach((m) => {
+    if (m.startDate && m.endDate) dated.push(toDay(m.startDate), toDay(m.endDate));
+    (m.subs || []).forEach((s) => { if (s.startDate && s.endDate) dated.push(toDay(s.startDate), toDay(s.endDate)); });
+  }));
+
+  const LABELS = ["Project / Stage / Task", "Assignee", "Status"];
+  if (!dated.length) {
+    sh.getRange(1, 1, 1, LABELS.length).setValues([LABELS]).setFontWeight("bold").setBackground(NAVY).setFontColor("#ffffff");
+    return;
+  }
+
+  const minDate = new Date(Math.min.apply(null, dated.map((d) => d.getTime())));
+  const maxDate = new Date(Math.max.apply(null, dated.map((d) => d.getTime())));
+  const totalDays = Math.min(Math.round((maxDate - minDate) / 86400000) + 1, 366);
+  const W = LABELS.length + totalDays;
+
+  // grow sheet (defaults to 26 cols / 1000 rows)
+  if (sh.getMaxColumns() < W) sh.insertColumnsAfter(sh.getMaxColumns(), W - sh.getMaxColumns());
+
+  // header
+  const header = LABELS.slice();
+  for (let i = 0; i < totalDays; i++) {
+    const d = new Date(minDate.getTime() + i * 86400000);
+    header.push(Utilities.formatDate(d, Session.getScriptTimeZone(), "d-MMM"));
+  }
+
+  const rows = [header];
+  const blocks = [];
+  const projectRows = [];
+  const bars = []; // { row, startOff, endOff, color }
+
+  const offset = (d) => Math.round((toDay(d) - minDate) / 86400000);
+
+  tree.forEach((p) => {
+    projectRows.push(rows.length);
+    const prow = [p.project + (p.progress != null ? "   ·   " + p.progress + "%" : ""), "", p.status || ""];
+    while (prow.length < W) prow.push("");
+    rows.push(prow);
+    const taskStart = rows.length;
+    const subBlocks = [];
+    (p.mains || []).forEach((m) => {
+      const r = ["    " + m.name, m.assignee, m.status];
+      while (r.length < W) r.push("");
+      rows.push(r);
+      if (m.startDate && m.endDate) bars.push({ row: rows.length - 1, startOff: offset(m.startDate), endOff: offset(m.endDate), color: STAGE_COLORS[m.name] || "#60A5FA" });
+      if (m.subs && m.subs.length) {
+        const start = rows.length;
+        m.subs.forEach((s) => {
+          const sr = ["        ↳ " + s.name, s.assignee, s.status];
+          while (sr.length < W) sr.push("");
+          rows.push(sr);
+          if (s.startDate && s.endDate) bars.push({ row: rows.length - 1, startOff: offset(s.startDate), endOff: offset(s.endDate), color: "#93C5FD" });
+        });
+        subBlocks.push({ start: start, end: rows.length - 1 });
+      }
+    });
+    if (rows.length - 1 >= taskStart) blocks.push({ taskStart: taskStart, taskEnd: rows.length - 1, subBlocks: subBlocks });
+  });
+
+  // ensure rows
+  if (sh.getMaxRows() < rows.length) sh.insertRowsAfter(sh.getMaxRows(), rows.length - sh.getMaxRows());
+
+  sh.getRange(1, 1, rows.length, W).setValues(rows);
+  sh.getRange(1, 1, 1, W).setFontWeight("bold").setBackground(NAVY).setFontColor("#ffffff");
+  sh.setFrozenRows(1);
+  sh.setFrozenColumns(LABELS.length);
+  sh.setColumnWidth(1, 280);
+  sh.setColumnWidth(2, 110);
+  sh.setColumnWidth(3, 100);
+  for (let c = LABELS.length + 1; c <= W; c++) sh.setColumnWidth(c, 26);
+
+  // project header rows
+  projectRows.forEach((r) => sh.getRange(r + 1, 1, 1, W).setBackground(PROJECT_BG).setFontColor("#ffffff").setFontWeight("bold"));
+
+  // bars
+  bars.forEach((b) => {
+    const s = Math.max(b.startOff, 0);
+    const e = Math.min(b.endOff, totalDays - 1);
+    if (s <= e) sh.getRange(b.row + 1, LABELS.length + 1 + s, 1, e - s + 1).setBackground(b.color);
+  });
+
+  // today marker (header cell)
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const tOff = Math.round((today - minDate) / 86400000);
+  if (tOff >= 0 && tOff < totalDays) sh.getRange(1, LABELS.length + 1 + tOff).setBackground("#FF5050").setFontColor("#ffffff");
+
+  // collapsible groups
+  sh.setRowGroupControlAfter(false);
+  blocks.forEach((b) => {
+    sh.getRange(b.taskStart + 1, 1, b.taskEnd - b.taskStart + 1, 1).shiftRowGroupDepth(1);
+    b.subBlocks.forEach((sb) => sh.getRange(sb.start + 1, 1, sb.end - sb.start + 1, 1).shiftRowGroupDepth(1));
+  });
 }

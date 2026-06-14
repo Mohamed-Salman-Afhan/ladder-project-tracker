@@ -790,8 +790,8 @@ function SheetsTab({ syncStatus }) {
           </p>
           <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: TEXT, lineHeight: 1.9 }}>
             <li><strong>Website-Project-Tracker</strong> — one row per project with each stage's status and overall progress</li>
-            <li><strong>Timeline</strong> — every dated stage with start, end and duration</li>
-            <li><strong>Gantt</strong> — a visual day-by-day chart of all stages</li>
+            <li><strong>Timeline</strong> — grouped by project (collapsible), with stages and sub-tasks nested underneath</li>
+            <li><strong>Gantt</strong> — grouped day-by-day chart with colour-coded bars per stage</li>
           </ul>
           {syncStatus && (
             <div style={{ marginTop: 16, fontSize: 12, fontWeight: 600, color: syncStatus.ok ? "#16a34a" : "#ef4444" }}>
@@ -1003,6 +1003,51 @@ function TimelineTab({ projects, initialFocusId }) {
    real boundary is Supabase RLS (authenticated-only), so without a real session
    the database returns nothing regardless of what the client renders. */
 const AUTH_BYPASS = typeof navigator !== "undefined" && navigator.webdriver === true;
+
+/* ─── Download menu ─────────────────────────────────────────── */
+function DownloadMenu({ projects, onCSV, onXLSX, onGantt, isMobile }) {
+  const [open, setOpen] = useState(false);
+  const [scope, setScope] = useState("all");
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const h = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+
+  const run = (fn) => {
+    const list = scope === "all" ? projects : projects.filter((p) => p.id === scope);
+    const proj = scope === "all" ? null : projects.find((p) => p.id === scope);
+    const base = proj ? `ladder_${(proj.projectName || "project").replace(/\s+/g, "_")}` : "ladder_all_projects";
+    fn(list, base);
+    setOpen(false);
+  };
+
+  const item = { width: "100%", textAlign: "left", padding: "9px 12px", borderRadius: 8, border: `1px solid ${BORDER2}`, background: SURFACE2, color: TEXT, fontWeight: 700, fontSize: 13, cursor: "pointer" };
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <button onClick={() => setOpen((o) => !o)} style={{ padding: isMobile ? "8px 14px" : "7px 16px", borderRadius: 8, border: "1px solid #3ECF8E55", background: "#3ECF8E22", cursor: "pointer", fontWeight: 700, fontSize: isMobile ? 12 : 13, color: "#3ECF8E", width: isMobile ? "100%" : "auto" }}>
+        Download ▾
+      </button>
+      {open && (
+        <div style={{ position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 50, width: 260, background: SURFACE, border: `1px solid ${BORDER}`, borderRadius: 12, boxShadow: "0 20px 50px rgba(0,0,0,0.6)", padding: 12 }}>
+          <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: TEXT3, marginBottom: 5, textTransform: "uppercase", letterSpacing: 0.5 }}>Scope</label>
+          <select value={scope} onChange={(e) => setScope(e.target.value)} style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${BORDER2}`, background: SURFACE2, color: TEXT, fontSize: 13, marginBottom: 12, outline: "none" }}>
+            <option value="all">All projects</option>
+            {projects.map((p) => <option key={p.id} value={p.id}>{p.projectName}</option>)}
+          </select>
+          <div style={{ display: "grid", gap: 7 }}>
+            <button style={item} onClick={() => run(onXLSX)}>Tracker — Excel (.xlsx)</button>
+            <button style={item} onClick={() => run(onCSV)}>Tracker — CSV</button>
+            <button style={{ ...item, borderColor: "#3ECF8E55", color: "#3ECF8E" }} onClick={() => run(onGantt)}>Gantt chart — Excel (.xlsx)</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 /* ─── Account ───────────────────────────────────────────────── */
 function AccountTab({ session, isAdmin }) {
@@ -1286,16 +1331,28 @@ export default function App() {
   }, [projects, loading]);
 
   /* Google Sheets sync — shapes the payload to match the Apps Script worker:
-     - projects[]: one entry per project with the four workflow stages in order
-       (the worker reads stages[0..3] for the stage columns) plus overall progress.
-     - timeline[]: one flat row per dated stage, used for the Timeline + Gantt tabs. */
+     - projects[]: one row per project for the tracker tab (4 stages + progress).
+     - tree[]: per-project hierarchy (mains → sub-tasks) for the grouped,
+       collapsible Timeline + Gantt tabs. */
   const syncSheets = useCallback(async (ps) => {
     try {
       const mainsOf = (p) => (p.tasks || p.stages || [])
         .filter((t) => (t.row_type || "main") !== "sub")
         .sort((a, b) => (a.order || 0) - (b.order || 0));
+      const subsOf = (p, m) => (p.tasks || [])
+        .filter((t) => (t.row_type || "main") === "sub" && t.parent_id === m.task_id)
+        .sort((a, b) => (a.order || 0) - (b.order || 0));
       const durDays = (s, e) =>
         s && e ? Math.round((new Date(e) - new Date(s)) / 86400000) + 1 : "";
+      const node = (t) => ({
+        name: t.name || "",
+        assignee: t.assignee || "",
+        startDate: t.startDate || "",
+        endDate: t.endDate || "",
+        durationDays: durDays(t.startDate, t.endDate),
+        status: t.status || "",
+        notes: t.notes || "",
+      });
 
       const projects = ps.map((p) => ({
         projectName: p.projectName,
@@ -1306,26 +1363,18 @@ export default function App() {
         stages: mainsOf(p).map((t) => ({ status: t.status, assignee: t.assignee || "" })),
       }));
 
-      const timeline = ps.flatMap((p) =>
-        mainsOf(p)
-          .filter((t) => t.startDate || t.endDate)
-          .map((t) => ({
-            project: p.projectName,
-            client: p.clientName,
-            stage: t.name,
-            assignee: t.assignee || "",
-            startDate: t.startDate || "",
-            endDate: t.endDate || "",
-            durationDays: durDays(t.startDate, t.endDate),
-            status: t.status,
-            notes: t.notes || "",
-          })),
-      );
+      const tree = ps.map((p) => ({
+        project: p.projectName,
+        client: p.clientName,
+        status: p.status,
+        progress: taskPct(p.tasks || p.stages || []),
+        mains: mainsOf(p).map((m) => ({ ...node(m), subs: subsOf(p, m).map(node) })),
+      }));
 
       const res = await fetch("/api/sync-sheets", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projects, timeline }),
+        body: JSON.stringify({ projects, tree }),
       });
       const data = await res.json();
       setSyncStatus({ ok: data.ok, msg: data.error || "" });
@@ -1423,40 +1472,93 @@ export default function App() {
 
 
   /* Export helpers */
-  const buildExportRows = () => {
+  const buildExportRows = (list = projects) => {
     const hdr = ["Project", "Client", "Website", "Status", "Progress %",
       "Questionnaire Status", "Q Assignee", "Q Start", "Q End",
       "Kickoff Status", "KM Assignee", "KM Start", "KM End",
       "UI/UX Status", "UI Assignee", "UI Start", "UI End",
       "Dev Status", "Dev Assignee", "Dev Start", "Dev End", "Notes (Latest)"];
-    const rows = projects.map((p) => {
-      const s = p.tasks;
-      const latestNote = [...s].reverse().find((x) => x.notes)?.notes || "";
-      return [p.projectName, p.clientName, p.website, p.status, taskPct(p.tasks) + "%",
-        s[0].status, s[0].assignee, s[0].startDate, s[0].endDate,
-        s[1].status, s[1].assignee, s[1].startDate, s[1].endDate,
-        s[2].status, s[2].assignee, s[2].startDate, s[2].endDate,
-        s[3].status, s[3].assignee, s[3].startDate, s[3].endDate, latestNote];
+    const rows = list.map((p) => {
+      // Only the main workflow stages, in order — sub-tasks and deletions must
+      // not break the fixed 4-stage columns.
+      const mains = (p.tasks || [])
+        .filter((t) => (t.row_type || "main") !== "sub")
+        .sort((a, b) => (a.order || 0) - (b.order || 0));
+      const g = (i, k) => (mains[i] ? (mains[i][k] || "") : "");
+      const latestNote = [...(p.tasks || [])].reverse().find((x) => x.notes)?.notes || "";
+      return [p.projectName, p.clientName, p.website || "", p.status, taskPct(p.tasks || []) + "%",
+        g(0, "status"), g(0, "assignee"), g(0, "startDate"), g(0, "endDate"),
+        g(1, "status"), g(1, "assignee"), g(1, "startDate"), g(1, "endDate"),
+        g(2, "status"), g(2, "assignee"), g(2, "startDate"), g(2, "endDate"),
+        g(3, "status"), g(3, "assignee"), g(3, "startDate"), g(3, "endDate"), latestNote];
     });
     return [hdr, ...rows];
   };
 
-  const exportCSV = () => {
-    const rows = buildExportRows();
-    const csv = rows.map((r) => r.map((c) => `"${(c || "").replace(/"/g, '""')}"`).join(",")).join("\n");
+  const triggerDownload = (blob, filename) => {
     const a = document.createElement("a");
-    a.href = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
-    a.download = "ladder_projects.csv";
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
     a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
   };
 
-  const exportXLSX = () => {
-    const rows = buildExportRows();
+  const exportCSV = (list = projects, name = "ladder_projects") => {
+    const rows = buildExportRows(list);
+    const csv = rows.map((r) => r.map((c) => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
+    triggerDownload(new Blob([csv], { type: "text/csv;charset=utf-8;" }), `${name}.csv`);
+  };
+
+  const exportXLSX = (list = projects, name = "ladder_projects") => {
+    const rows = buildExportRows(list);
     const ws = XLSX.utils.aoa_to_sheet(rows);
     ws["!cols"] = [18, 16, 18, 14, 10, 14, 12, 10, 10, 14, 12, 10, 10, 12, 12, 10, 10, 12, 12, 10, 10, 30].map((w) => ({ wch: w }));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Project Tracker");
-    XLSX.writeFile(wb, "ladder_projects.xlsx");
+    const out = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    triggerDownload(new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), `${name}.xlsx`);
+  };
+
+  // Colored Gantt chart as XLSX (one column per day, stage bars colour-coded).
+  const exportGanttXLSX = (list = projects, name = "ladder_gantt") => {
+    const STAGE_FILL = { "Questionnaire": "FF5050", "Kickoff Meeting": "3B82F6", "UI/UX Design": "8B5CF6", "Development": "22C55E" };
+    const day = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
+    const bars = [];
+    list.forEach((p) => (p.tasks || [])
+      .filter((t) => (t.row_type || "main") !== "sub" && t.startDate && t.endDate)
+      .forEach((t) => bars.push({ project: p.projectName, stage: t.name, assignee: t.assignee || "", start: day(t.startDate), end: day(t.endDate), status: t.status })));
+    if (!bars.length) { showToast(i18n.t("No dated stages to chart."), "error"); return; }
+
+    const minD = day(Math.min(...bars.map((b) => b.start.getTime())));
+    const maxD = day(Math.max(...bars.map((b) => b.end.getTime())));
+    const totalDays = Math.min(dayDiff(minD, maxD) + 1, 366);
+    const hdrStyle = { fill: { patternType: "solid", fgColor: { rgb: "1E3A5F" } }, font: { bold: true, color: { rgb: "FFFFFF" } } };
+
+    const ws = {};
+    const set = (r, c, v, s) => { ws[XLSX.utils.encode_cell({ r, c })] = { t: "s", v: v == null ? "" : String(v), ...(s ? { s } : {}) }; };
+    const LABELS = ["Project", "Stage", "Assignee", "Start", "End"];
+    LABELS.forEach((l, c) => set(0, c, l, hdrStyle));
+    for (let i = 0; i < totalDays; i++) { const d = addDays(minD, i); set(0, 5 + i, `${d.getDate()}/${d.getMonth() + 1}`, hdrStyle); }
+
+    bars.forEach((b, ri) => {
+      const r = ri + 1;
+      set(r, 0, b.project); set(r, 1, b.stage); set(r, 2, b.assignee);
+      set(r, 3, b.start.toISOString().slice(0, 10)); set(r, 4, b.end.toISOString().slice(0, 10));
+      const so = dayDiff(minD, b.start);
+      const eo = Math.min(dayDiff(minD, b.end), totalDays - 1);
+      const fill = STAGE_FILL[b.stage] || "60A5FA";
+      for (let c = so; c <= eo; c++) if (c >= 0 && c < totalDays) set(r, 5 + c, "", { fill: { patternType: "solid", fgColor: { rgb: fill } } });
+    });
+
+    ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: bars.length, c: 4 + totalDays } });
+    ws["!cols"] = [{ wch: 18 }, { wch: 16 }, { wch: 12 }, { wch: 11 }, { wch: 11 }, ...Array(totalDays).fill({ wch: 3.5 })];
+    ws["!freeze"] = { xSplit: 5, ySplit: 1 };
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Gantt");
+    const out = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    triggerDownload(new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), `${name}.xlsx`);
   };
 
   const stats = useMemo(() => ({
@@ -1511,10 +1613,7 @@ export default function App() {
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               {!isMobile && (
-                <>
-                  <button onClick={exportCSV} style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #ffffff33", background: "transparent", cursor: "pointer", fontWeight: 600, fontSize: 12, color: TEXT_ACCENT }}>CSV</button>
-                  <button onClick={exportXLSX} style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #3ECF8E55", background: "#3ECF8E22", cursor: "pointer", fontWeight: 600, fontSize: 12, color: "#3ECF8E" }}>XLSX</button>
-                </>
+                <DownloadMenu projects={projects} onCSV={exportCSV} onXLSX={exportXLSX} onGantt={exportGanttXLSX} />
               )}
               <button data-testid="btn-new" onClick={() => setModal(mkProject())} style={{ padding: isMobile ? "7px 14px" : "7px 16px", borderRadius: 8, border: "none", background: BRAND, color: TEXT_ACCENT, cursor: "pointer", fontWeight: 800, fontSize: isMobile ? 12 : 13 }}>+ New</button>
               {!isMobile && supabase && !AUTH_BYPASS && session && (
@@ -1528,9 +1627,10 @@ export default function App() {
 
           {/* Mobile export menu */}
           {isMobile && mobileMenuOpen && (
-            <div style={{ paddingBottom: 12, display: "flex", gap: 8 }}>
-              <button onClick={() => { exportCSV(); setMobileMenuOpen(false); }} style={{ flex: 1, padding: "8px", borderRadius: 8, border: "1px solid #ffffff33", background: "transparent", cursor: "pointer", fontWeight: 600, fontSize: 12, color: TEXT_ACCENT }}>Export CSV</button>
-              <button onClick={() => { exportXLSX(); setMobileMenuOpen(false); }} style={{ flex: 1, padding: "8px", borderRadius: 8, border: "1px solid #3ECF8E55", background: "#3ECF8E22", cursor: "pointer", fontWeight: 600, fontSize: 12, color: "#3ECF8E" }}>Export XLSX</button>
+            <div style={{ paddingBottom: 12, display: "flex", gap: 8, alignItems: "flex-start" }}>
+              <div style={{ flex: 1 }}>
+                <DownloadMenu projects={projects} onCSV={exportCSV} onXLSX={exportXLSX} onGantt={exportGanttXLSX} isMobile />
+              </div>
               {supabase && !AUTH_BYPASS && session && (
                 <button onClick={() => { signOut(); setMobileMenuOpen(false); }} style={{ flex: 1, padding: "8px", borderRadius: 8, border: "1px solid #ffffff33", background: "transparent", cursor: "pointer", fontWeight: 600, fontSize: 12, color: TEXT_ACCENT }}>Sign Out</button>
               )}
