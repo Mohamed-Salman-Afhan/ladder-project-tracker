@@ -78,7 +78,19 @@ const mkProject = () => ({
   tasks: STAGES.map((s, i) => mkTask(s, "main", null, i + 1)),
 });
 
-const taskPct = (ts) => ts.length ? Math.round(ts.filter((x) => x.status === "Completed").length / ts.length * 100) : 0;
+// Progress counts only ACTIVE tasks — inactive main tasks (and the subtasks
+// beneath them) are excluded from both the numerator and the denominator.
+const taskPct = (ts) => {
+  const inactiveMains = new Set(
+    ts.filter((t) => (t.row_type || "main") !== "sub" && t.isActive === false).map((t) => t.task_id)
+  );
+  const counted = ts.filter(
+    (t) => t.isActive !== false && !(t.parent_id && inactiveMains.has(t.parent_id))
+  );
+  return counted.length
+    ? Math.round((counted.filter((x) => x.status === "Completed").length / counted.length) * 100)
+    : 0;
+};
 
 const buildHierarchy = (tasks = []) => {
   const safeTasks = tasks.map((t, i) => ({ ...t, task_id: t.task_id || `legacy-${i}` }));
@@ -480,46 +492,56 @@ function ProjectModal({ project, team, onSave, onClose }) {
                       <button onClick={() => setTask(mainTask.task_id, "isActive", mainTask.isActive === false)} style={{ ...sinp, width: "auto", cursor: "pointer", color: mainTask.isActive === false ? "#4ade80" : "#f59e0b", border: `1px solid ${mainTask.isActive === false ? "#22c55e44" : "#f59e0b44"}` }}>
                         {mainTask.isActive === false ? i18n.t("Set Active") : i18n.t("Set Inactive")}
                       </button>
+                      <button
+                        data-testid={`btn-delete-main-${mainTask.task_id}`}
+                        onClick={() => {
+                          const hasSubs = mainTask.subtasks.length > 0;
+                          if (!hasSubs || window.confirm(i18n.t("Delete this main task and its sub-tasks?"))) {
+                            removeTask(mainTask.task_id);
+                          }
+                        }}
+                        style={{ ...sinp, width: "auto", cursor: "pointer", color: "#f87171", border: "1px solid #ef444444" }}
+                      >
+                        {i18n.t("Delete")}
+                      </button>
                     </div>
                   </div>
-                  
-                  {mainTask.subtasks.length === 0 ? (
-                    <>
-                     <div
-                     style={{
-                       display: "grid",
-                       gridTemplateColumns: isMobile ? "1fr 1fr" : "1fr 1fr 1fr 1fr",
-                       gap: 9,
-                     }}
-                   >
-                     {/* Same fields as subtask but for main task */}
-                     <div>
-                       <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: TEXT3, marginBottom: 3, textTransform: "uppercase" }}>{i18n.t("Assigned To")}</label>
-                       <select value={mainTask.assignee} onChange={(e) => setTask(mainTask.task_id, "assignee", e.target.value)} style={{ ...sinp, background: SURFACE }}>
-                         <option value="">{i18n.t("— Select —")}</option>
-                         {team.filter(t => t.is_active !== false).map((t) => <option key={t.id} value={t.name}>{t.name}</option>)}
-                       </select>
-                     </div>
-                     <div>
-                        <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: TEXT3, marginBottom: 3, textTransform: "uppercase" }}>{i18n.t("Start Date")}</label>
-                        <input type="date" value={mainTask.startDate} onChange={(e) => setTask(mainTask.task_id, "startDate", e.target.value)} style={{ ...sinp, colorScheme: "dark" }} />
-                     </div>
-                     <div>
-                        <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: TEXT3, marginBottom: 3, textTransform: "uppercase" }}>{i18n.t("End Date")}</label>
-                        <input type="date" value={mainTask.endDate} onChange={(e) => setTask(mainTask.task_id, "endDate", e.target.value)} style={{ ...sinp, colorScheme: "dark" }} />
-                     </div>
-                     <div>
-                       <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: TEXT3, marginBottom: 3, textTransform: "uppercase" }}>{i18n.t("Status")}</label>
-                       <select value={mainTask.status} onChange={(e) => setTask(mainTask.task_id, "status", e.target.value)} style={{ ...sinp, background: SURFACE }}>
-                         {STATUSES.map((s) => <option key={s}>{i18n.t(s)}</option>)}
-                       </select>
-                     </div>
-                   </div>
-                   <div style={{ marginTop: 10 }}>
-                     <input placeholder={i18n.t("Add notes (optional)...")} value={mainTask.notes || ""} onChange={(e) => setTask(mainTask.task_id, "notes", e.target.value)} style={{ ...sinp, width: "100%", background: SURFACE }} />
-                   </div>
-                   </>
-                  ) : (
+
+                  {/* Main task's own fields — always editable, even when it has sub-tasks */}
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: isMobile ? "1fr 1fr" : "1fr 1fr 1fr 1fr",
+                      gap: 9,
+                    }}
+                  >
+                    <div>
+                      <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: TEXT3, marginBottom: 3, textTransform: "uppercase" }}>{i18n.t("Assigned To")}</label>
+                      <select value={mainTask.assignee} onChange={(e) => setTask(mainTask.task_id, "assignee", e.target.value)} style={{ ...sinp, background: SURFACE }}>
+                        <option value="">{i18n.t("— Select —")}</option>
+                        {team.filter(t => t.is_active !== false).map((t) => <option key={t.id} value={t.name}>{t.name}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: TEXT3, marginBottom: 3, textTransform: "uppercase" }}>{i18n.t("Start Date")}</label>
+                      <input type="date" value={mainTask.startDate} onChange={(e) => setTask(mainTask.task_id, "startDate", e.target.value)} style={{ ...sinp, colorScheme: "dark" }} />
+                    </div>
+                    <div>
+                      <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: TEXT3, marginBottom: 3, textTransform: "uppercase" }}>{i18n.t("End Date")}</label>
+                      <input type="date" value={mainTask.endDate} onChange={(e) => setTask(mainTask.task_id, "endDate", e.target.value)} style={{ ...sinp, colorScheme: "dark" }} />
+                    </div>
+                    <div>
+                      <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: TEXT3, marginBottom: 3, textTransform: "uppercase" }}>{i18n.t("Status")}</label>
+                      <select value={mainTask.status} onChange={(e) => setTask(mainTask.task_id, "status", e.target.value)} style={{ ...sinp, background: SURFACE }}>
+                        {STATUSES.map((s) => <option key={s}>{i18n.t(s)}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <div style={{ marginTop: 2 }}>
+                    <input placeholder={i18n.t("Add notes (optional)...")} value={mainTask.notes || ""} onChange={(e) => setTask(mainTask.task_id, "notes", e.target.value)} style={{ ...sinp, width: "100%", background: SURFACE }} />
+                  </div>
+
+                  {mainTask.subtasks.length > 0 && (
                     <div style={{ marginLeft: 20, display: "grid", gap: 10, borderLeft: `2px solid ${BORDER2}`, paddingLeft: 14 }}>
                       {mainTask.subtasks.map((sub, j) => (
                         <div key={sub.task_id} style={{ display: "grid", gap: 8, background: SURFACE, padding: 10, borderRadius: 8, border: `1px solid ${BORDER}` }}>
