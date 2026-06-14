@@ -4,7 +4,7 @@ import { test, expect } from '@playwright/test';
 /**
  * Before each test:
  * 1. Abort Supabase + Google Sheets requests via regex (glob pattern is unreliable for supabase.co)
- * 2. Clear localStorage so the app starts from a clean slate (SAMPLE data loads)
+ * 2. Clear localStorage so the app starts from a clean slate (no projects)
  * 3. Navigate and wait for the loading spinner to disappear
  */
 test.beforeEach(async ({ page }) => {
@@ -200,10 +200,10 @@ test('edit modal shows all four workflow stages', async ({ page }) => {
 
   const modal = page.getByTestId('project-modal');
   await expect(modal).toBeVisible();
-  await expect(modal.getByText('Workflow Stages')).toBeVisible();
+  await expect(modal.getByText('Tasks')).toBeVisible();
 
   for (const stage of ['Questionnaire', 'Kickoff Meeting', 'UI/UX Design', 'Development']) {
-    await expect(modal.getByText(stage)).toBeVisible();
+    await expect(modal.locator(`input[value="${stage}"]`)).toBeVisible();
   }
 
   await page.getByTestId('btn-cancel-modal').click();
@@ -253,6 +253,28 @@ test('cancel delete keeps the project', async ({ page }) => {
 
   await expect(page.getByText('Delete Project?')).toBeHidden();
   await expect(page.getByText(projectName)).toBeVisible();
+});
+
+test('toggles a project between active and inactive (soft delete)', async ({ page }) => {
+  const projectName = `Toggle_${Date.now()}`;
+
+  await page.getByTestId('btn-new').click();
+  await page.getByTestId('input-projectName').fill(projectName);
+  await page.getByTestId('input-clientName').fill('Toggle Client');
+  await page.getByTestId('btn-save').click();
+  await expect(page.getByTestId('project-modal')).toBeHidden();
+
+  await page.getByRole('button', { name: 'Projects' }).click();
+  const card = page.locator('[data-testid^="project-card-"]').filter({ hasText: projectName });
+
+  // Deactivate — project is retained (soft delete) and the toggle flips label
+  await card.getByRole('button', { name: 'Set Inactive' }).click();
+  await expect(card.getByRole('button', { name: 'Set Active' })).toBeVisible();
+  await expect(page.getByText(projectName)).toBeVisible();
+
+  // Reactivate
+  await card.getByRole('button', { name: 'Set Active' }).click();
+  await expect(card.getByRole('button', { name: 'Set Inactive' })).toBeVisible();
 });
 
 // ─── Search & Filter ─────────────────────────────────────────────────────────
@@ -379,7 +401,7 @@ test('closes modal with the × button', async ({ page }) => {
   await page.getByTestId('btn-new').click();
   const modal = page.getByTestId('project-modal');
   await expect(modal).toBeVisible();
-  await modal.getByRole('button', { name: '×' }).click();
+  await modal.getByRole('button', { name: '×' }).first().click();
   await expect(modal).toBeHidden();
 });
 
@@ -442,7 +464,7 @@ test('prevents adding an empty name', async ({ page }) => {
   await expect(page.getByText('Janith', { exact: true })).toHaveCount(1);
 });
 
-test('removes a team member after confirmation', async ({ page }) => {
+test('deactivates a team member (soft delete)', async ({ page }) => {
   await page.getByRole('button', { name: 'Team' }).click();
 
   // Add a temporary member — it will be the LAST in the list
@@ -451,25 +473,26 @@ test('removes a team member after confirmation', async ({ page }) => {
   await page.getByTestId('btn-add-team').click();
   await expect(page.getByText(tempMember, { exact: true })).toBeVisible();
 
-  page.once('dialog', async (dialog) => {
-    await dialog.accept(); // confirm removal
-  });
+  // No "Set Active" buttons exist while every member is active
+  await expect(page.getByRole('button', { name: 'Set Active' })).toHaveCount(0);
 
-  // The newly-added member is last, so its Remove button is last
-  await page.getByRole('button', { name: 'Remove' }).last().click();
+  // The newly-added member is last, so its Set Inactive button is last
+  await page.getByRole('button', { name: 'Set Inactive' }).last().click();
 
-  await expect(page.getByText(tempMember, { exact: true })).not.toBeVisible();
+  // Member is retained (soft delete) and its toggle now reads "Set Active"
+  await expect(page.getByText(tempMember, { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Set Active' })).toHaveCount(1);
 });
 
-test('cancels removing a team member', async ({ page }) => {
+test('reactivates an inactive team member', async ({ page }) => {
   await page.getByRole('button', { name: 'Team' }).click();
 
-  page.once('dialog', async (dialog) => {
-    await dialog.dismiss(); // cancel removal
-  });
+  // Pasindu is first in INIT_TEAM — deactivate it
+  await page.getByRole('button', { name: 'Set Inactive' }).first().click();
+  await expect(page.getByRole('button', { name: 'Set Active' })).toHaveCount(1);
 
-  // Pasindu is first in INIT_TEAM, so its Remove button is first
-  await page.getByRole('button', { name: 'Remove' }).first().click();
-
+  // Reactivate it again
+  await page.getByRole('button', { name: 'Set Active' }).first().click();
+  await expect(page.getByRole('button', { name: 'Set Active' })).toHaveCount(0);
   await expect(page.getByText('Pasindu', { exact: true })).toBeVisible();
 });
