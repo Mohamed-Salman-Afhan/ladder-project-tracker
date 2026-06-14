@@ -1004,6 +1004,129 @@ function TimelineTab({ projects, initialFocusId }) {
    the database returns nothing regardless of what the client renders. */
 const AUTH_BYPASS = typeof navigator !== "undefined" && navigator.webdriver === true;
 
+/* ─── Account ───────────────────────────────────────────────── */
+function AccountTab({ session, isAdmin }) {
+  const user = session?.user;
+
+  // Change own password
+  const [newPw, setNewPw] = useState("");
+  const [pwBusy, setPwBusy] = useState(false);
+  const [pwMsg, setPwMsg] = useState(null);
+  const changePassword = async (e) => {
+    e.preventDefault();
+    if (newPw.length < 8) { setPwMsg({ ok: false, t: "Password must be at least 8 characters." }); return; }
+    setPwBusy(true); setPwMsg(null);
+    const { error } = await supabase.auth.updateUser({ password: newPw });
+    setPwBusy(false);
+    setPwMsg(error ? { ok: false, t: error.message } : { ok: true, t: "Password updated." });
+    if (!error) setNewPw("");
+  };
+
+  // Admin: create a login (auto temp password)
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null); // { email, password } | { error }
+  const createUser = async (e) => {
+    e.preventDefault();
+    setBusy(true); setResult(null);
+    try {
+      const { data: { session: s } } = await supabase.auth.getSession();
+      const res = await fetch("/api/create-user", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${s?.access_token || ""}` },
+        body: JSON.stringify({ email: email.trim(), role: role.trim() }),
+      });
+      const data = await res.json();
+      if (data.ok) { setResult({ email: data.email, password: data.password }); setEmail(""); setRole(""); }
+      else setResult({ error: data.error || "Failed to create user." });
+    } catch (err) { setResult({ error: err.message }); }
+    setBusy(false);
+  };
+
+  const card = { background: SURFACE, border: `1px solid ${BORDER}`, borderRadius: 14, overflow: "hidden", marginBottom: 18 };
+  const head = { padding: "16px 22px", background: HEADER_BG, borderBottom: `1px solid ${BORDER}` };
+  const body = { padding: "20px 22px" };
+  const field = { width: "100%", boxSizing: "border-box", padding: "9px 12px", borderRadius: 8, border: `1.5px solid ${BORDER2}`, background: SURFACE2, color: TEXT, fontSize: 14, outline: "none" };
+  const lbl = { display: "block", fontSize: 11, fontWeight: 700, color: TEXT3, marginBottom: 5, textTransform: "uppercase", letterSpacing: 0.5 };
+  const btn = (bg, fg) => ({ padding: "10px 18px", borderRadius: 8, border: "none", background: bg, color: fg, fontWeight: 800, fontSize: 13, cursor: "pointer" });
+
+  if (!user) {
+    return <div style={{ ...card, ...body, maxWidth: 520, color: TEXT3, fontSize: 13 }}>Not signed in.</div>;
+  }
+
+  return (
+    <div style={{ maxWidth: 520 }}>
+      {/* Profile */}
+      <div style={card}>
+        <div style={head}>
+          <h2 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: TEXT_ACCENT }}>Your Account</h2>
+        </div>
+        <div style={body}>
+          <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 18 }}>
+            <div style={{ width: 46, height: 46, borderRadius: "50%", background: BRAND, color: TEXT_ACCENT, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 20, textTransform: "uppercase" }}>
+              {(user.email || "?")[0]}
+            </div>
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: TEXT }}>{user.email}</div>
+              <div style={{ fontSize: 12, color: TEXT3, marginTop: 2 }}>
+                {user.user_metadata?.role || "Team member"}{isAdmin ? " · Admin" : ""}
+              </div>
+            </div>
+          </div>
+
+          <form onSubmit={changePassword}>
+            <label style={lbl}>Change Password</label>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input type="password" autoComplete="new-password" placeholder="New password (min 8 chars)" value={newPw} onChange={(e) => setNewPw(e.target.value)} style={field} />
+              <button type="submit" disabled={pwBusy} style={{ ...btn(SURFACE2, TEXT), border: `1px solid ${BORDER2}`, whiteSpace: "nowrap", opacity: pwBusy ? 0.7 : 1 }}>{pwBusy ? "Saving…" : "Update"}</button>
+            </div>
+            {pwMsg && <div style={{ marginTop: 8, fontSize: 12.5, fontWeight: 600, color: pwMsg.ok ? "#4ade80" : "#f87171" }}>{pwMsg.t}</div>}
+          </form>
+        </div>
+      </div>
+
+      {/* Admin: create login */}
+      {isAdmin && (
+        <div style={card}>
+          <div style={head}>
+            <h2 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: TEXT_ACCENT }}>Create a Login</h2>
+            <p style={{ margin: "3px 0 0", fontSize: 12, color: TEXT2 }}>Admin only. A temporary password is generated to share with the new member.</p>
+          </div>
+          <div style={body}>
+            <form onSubmit={createUser} style={{ display: "grid", gap: 12 }}>
+              <div>
+                <label style={lbl}>Email</label>
+                <input type="email" required placeholder="name@ladderglobal.com" value={email} onChange={(e) => setEmail(e.target.value)} style={field} />
+              </div>
+              <div>
+                <label style={lbl}>Role (optional)</label>
+                <input placeholder="e.g. Developer" value={role} onChange={(e) => setRole(e.target.value)} style={field} />
+              </div>
+              <button type="submit" disabled={busy} style={{ ...btn(BRAND, TEXT_ACCENT), opacity: busy ? 0.7 : 1 }}>{busy ? "Creating…" : "Create Login"}</button>
+            </form>
+
+            {result?.error && (
+              <div role="alert" style={{ marginTop: 14, fontSize: 13, fontWeight: 600, color: "#f87171" }}>{result.error}</div>
+            )}
+            {result?.password && (
+              <div style={{ marginTop: 14, padding: 14, borderRadius: 10, background: "#22c55e11", border: "1px solid #22c55e44" }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700, color: "#4ade80", marginBottom: 8 }}>Login created — share these with {result.email}:</div>
+                <div style={{ fontSize: 13, color: TEXT, fontFamily: "monospace", lineHeight: 1.8, wordBreak: "break-all" }}>
+                  <div>Email: {result.email}</div>
+                  <div>Temp password: <strong>{result.password}</strong></div>
+                </div>
+                <button onClick={() => navigator.clipboard?.writeText(`Email: ${result.email}\nTemporary password: ${result.password}`)} style={{ ...btn(SURFACE2, TEXT), border: `1px solid ${BORDER2}`, marginTop: 10, fontSize: 12 }}>Copy</button>
+                <div style={{ fontSize: 11.5, color: TEXT3, marginTop: 8 }}>Ask them to change it under Account → Change Password after signing in.</div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ─── Login ─────────────────────────────────────────────────── */
 function LoginScreen() {
   const [email, setEmail] = useState("");
@@ -1088,6 +1211,11 @@ export default function App() {
 
   const authed = AUTH_BYPASS || !supabase || !!session;
   const signOut = () => supabase && supabase.auth.signOut();
+
+  // UI-only admin gate (the server re-checks ADMIN_EMAILS before creating users).
+  const ADMIN_LIST = (import.meta.env.VITE_ADMIN_EMAILS || "salman@ladderglobal.com")
+    .split(",").map((s) => s.trim().toLowerCase());
+  const isAdmin = !!session && ADMIN_LIST.includes((session.user.email || "").toLowerCase());
 
   const [expandedProjectTasks, setExpandedProjectTasks] = useState(new Set());
   const toggleProjectTaskExpand = (id) => setExpandedProjectTasks(s => {
@@ -1344,7 +1472,7 @@ export default function App() {
     return (!q || p.projectName.toLowerCase().includes(q) || p.clientName.toLowerCase().includes(q)) && (fStatus === "All" || p.status === fStatus);
   }), [projects, search, fStatus]);
 
-  const TABS = [["dashboard", "Dashboard"], ["projects", "Projects"], ["timeline", "Timeline"], ["team", "Team"], ["sheets", "Sheets"]];
+  const TABS = [["dashboard", "Dashboard"], ["projects", "Projects"], ["timeline", "Timeline"], ["team", "Team"], ["sheets", "Sheets"], ["account", "Account"]];
   const CARDS = [
     { l: "Total", v: stats.total, c: BRAND, bg: BRAND_DIM },
     { l: "In Progress", v: stats.inProgress, c: "#2563eb", bg: "#3b82f611" },
@@ -1580,6 +1708,7 @@ export default function App() {
                 {!loading && tab === "timeline" && <TimelineTab projects={projects} initialFocusId={timelineProjectId} />}
         {!loading && tab === "team" && <TeamTab team={team} setTeam={setTeam} projects={projects} />}
         {!loading && tab === "sheets" && <SheetsTab syncStatus={syncStatus} />}
+        {!loading && tab === "account" && <AccountTab session={session} isAdmin={isAdmin} />}
       </div>
 
       {/* ── Project Modal ── */}
