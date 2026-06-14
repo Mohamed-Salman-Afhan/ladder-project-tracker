@@ -1471,28 +1471,34 @@ export default function App() {
   };
 
 
-  /* Export helpers */
-  const buildExportRows = (list = projects) => {
-    const hdr = ["Project", "Client", "Website", "Status", "Progress %",
-      "Questionnaire Status", "Q Assignee", "Q Start", "Q End",
-      "Kickoff Status", "KM Assignee", "KM Start", "KM End",
-      "UI/UX Status", "UI Assignee", "UI Start", "UI End",
-      "Dev Status", "Dev Assignee", "Dev Start", "Dev End", "Notes (Latest)"];
-    const rows = list.map((p) => {
-      // Only the main workflow stages, in order — sub-tasks and deletions must
-      // not break the fixed 4-stage columns.
+  /* Export helpers — hierarchical rows (project → stages → sub-tasks), mirroring
+     the grouped Google Sheets layout. `levels` drives Excel's collapsible outline;
+     the indentation in column A gives the hierarchy in CSV (which has no grouping). */
+  const buildTreeRows = (list = projects) => {
+    const header = ["Project / Stage / Task", "Assignee", "Start", "End", "Duration (Days)", "Status", "Notes"];
+    const dur = (s, e) => (s && e ? Math.round((new Date(e) - new Date(s)) / 86400000) + 1 : "");
+    const rows = [header];
+    const levels = [0];      // outline level per row (0 = none)
+    const kinds = ["header"]; // header | project | main | sub
+    list.forEach((p) => {
       const mains = (p.tasks || [])
         .filter((t) => (t.row_type || "main") !== "sub")
         .sort((a, b) => (a.order || 0) - (b.order || 0));
-      const g = (i, k) => (mains[i] ? (mains[i][k] || "") : "");
-      const latestNote = [...(p.tasks || [])].reverse().find((x) => x.notes)?.notes || "";
-      return [p.projectName, p.clientName, p.website || "", p.status, taskPct(p.tasks || []) + "%",
-        g(0, "status"), g(0, "assignee"), g(0, "startDate"), g(0, "endDate"),
-        g(1, "status"), g(1, "assignee"), g(1, "startDate"), g(1, "endDate"),
-        g(2, "status"), g(2, "assignee"), g(2, "startDate"), g(2, "endDate"),
-        g(3, "status"), g(3, "assignee"), g(3, "startDate"), g(3, "endDate"), latestNote];
+      rows.push([`${p.projectName}   ·   ${taskPct(p.tasks || [])}%`, "", "", "", "", p.status || "", ""]);
+      levels.push(0); kinds.push("project");
+      mains.forEach((m) => {
+        rows.push([`    ${m.name}`, m.assignee || "", m.startDate || "", m.endDate || "", dur(m.startDate, m.endDate), m.status || "", m.notes || ""]);
+        levels.push(1); kinds.push("main");
+        (p.tasks || [])
+          .filter((t) => (t.row_type || "main") === "sub" && t.parent_id === m.task_id)
+          .sort((a, b) => (a.order || 0) - (b.order || 0))
+          .forEach((s) => {
+            rows.push([`        ↳ ${s.name}`, s.assignee || "", s.startDate || "", s.endDate || "", dur(s.startDate, s.endDate), s.status || "", s.notes || ""]);
+            levels.push(2); kinds.push("sub");
+          });
+      });
     });
-    return [hdr, ...rows];
+    return { rows, levels, kinds };
   };
 
   const triggerDownload = (blob, filename) => {
@@ -1506,17 +1512,31 @@ export default function App() {
   };
 
   const exportCSV = (list = projects, name = "ladder_projects") => {
-    const rows = buildExportRows(list);
+    const { rows } = buildTreeRows(list);
     const csv = rows.map((r) => r.map((c) => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
     triggerDownload(new Blob([csv], { type: "text/csv;charset=utf-8;" }), `${name}.csv`);
   };
 
   const exportXLSX = (list = projects, name = "ladder_projects") => {
-    const rows = buildExportRows(list);
+    const { rows, levels, kinds } = buildTreeRows(list);
     const ws = XLSX.utils.aoa_to_sheet(rows);
-    ws["!cols"] = [18, 16, 18, 14, 10, 14, 12, 10, 10, 14, 12, 10, 10, 12, 12, 10, 10, 12, 12, 10, 10, 30].map((w) => ({ wch: w }));
+    ws["!cols"] = [{ wch: 42 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 32 }];
+    // Excel outline levels → collapsible groups (project ▸ stages ▸ sub-tasks)
+    ws["!rows"] = levels.map((lv) => (lv > 0 ? { level: lv } : {}));
+    const W = rows[0].length;
+    rows.forEach((_, r) => {
+      const style = r === 0 || kinds[r] === "project"
+        ? { fill: { patternType: "solid", fgColor: { rgb: "1E3A5F" } }, font: { bold: true, color: { rgb: "FFFFFF" } } }
+        : kinds[r] === "main" ? { font: { bold: true } } : null;
+      if (!style) return;
+      for (let c = 0; c < W; c++) {
+        const ref = XLSX.utils.encode_cell({ r, c });
+        if (!ws[ref]) ws[ref] = { t: "s", v: "" };
+        ws[ref].s = style;
+      }
+    });
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Project Tracker");
+    XLSX.utils.book_append_sheet(wb, ws, "Projects");
     const out = XLSX.write(wb, { bookType: "xlsx", type: "array" });
     triggerDownload(new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), `${name}.xlsx`);
   };

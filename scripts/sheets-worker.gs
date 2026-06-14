@@ -160,7 +160,6 @@ function buildTimeline(ss, tree) {
   statusCells.forEach((sc) => { const bg = statusBg(sc.status); if (bg) sh.getRange(sc.row + 1, 6).setBackground(bg); });
 
   // collapsible groups: tasks under project, subs under their main
-  sh.setRowGroupControlAfter(false);
   blocks.forEach((b) => {
     sh.getRange(b.taskStart + 1, 1, b.taskEnd - b.taskStart + 1, 1).shiftRowGroupDepth(1);
     b.subBlocks.forEach((sb) => sh.getRange(sb.start + 1, 1, sb.end - sb.start + 1, 1).shiftRowGroupDepth(1));
@@ -261,7 +260,6 @@ function buildGantt(ss, tree) {
   if (tOff >= 0 && tOff < totalDays) sh.getRange(1, LABELS.length + 1 + tOff).setBackground("#FF5050").setFontColor("#ffffff");
 
   // collapsible groups
-  sh.setRowGroupControlAfter(false);
   blocks.forEach((b) => {
     sh.getRange(b.taskStart + 1, 1, b.taskEnd - b.taskStart + 1, 1).shiftRowGroupDepth(1);
     b.subBlocks.forEach((sb) => sh.getRange(sb.start + 1, 1, sb.end - sb.start + 1, 1).shiftRowGroupDepth(1));
