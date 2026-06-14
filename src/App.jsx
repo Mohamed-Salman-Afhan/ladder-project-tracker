@@ -1016,11 +1016,11 @@ function DownloadMenu({ projects, onCSV, onXLSX, onGantt, isMobile }) {
     return () => document.removeEventListener("mousedown", h);
   }, []);
 
-  const run = (fn) => {
+  const run = (fn, suffix) => {
     const list = scope === "all" ? projects : projects.filter((p) => p.id === scope);
     const proj = scope === "all" ? null : projects.find((p) => p.id === scope);
     const base = proj ? `ladder_${(proj.projectName || "project").replace(/\s+/g, "_")}` : "ladder_all_projects";
-    fn(list, base);
+    fn(list, `${base}_${suffix}`);
     setOpen(false);
   };
 
@@ -1039,9 +1039,9 @@ function DownloadMenu({ projects, onCSV, onXLSX, onGantt, isMobile }) {
             {projects.map((p) => <option key={p.id} value={p.id}>{p.projectName}</option>)}
           </select>
           <div style={{ display: "grid", gap: 7 }}>
-            <button style={item} onClick={() => run(onXLSX)}>Tracker — Excel (.xlsx)</button>
-            <button style={item} onClick={() => run(onCSV)}>Tracker — CSV</button>
-            <button style={{ ...item, borderColor: "#3ECF8E55", color: "#3ECF8E" }} onClick={() => run(onGantt)}>Gantt chart — Excel (.xlsx)</button>
+            <button style={item} onClick={() => run(onXLSX, "projects")}>Projects — Excel (.xlsx)</button>
+            <button style={item} onClick={() => run(onCSV, "projects")}>Projects — CSV</button>
+            <button style={{ ...item, borderColor: "#3ECF8E55", color: "#3ECF8E" }} onClick={() => run(onGantt, "gantt")}>Gantt chart — Excel (.xlsx)</button>
           </div>
         </div>
       )}
@@ -1541,40 +1541,62 @@ export default function App() {
     triggerDownload(new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), `${name}.xlsx`);
   };
 
-  // Colored Gantt chart as XLSX (one column per day, stage bars colour-coded).
+  // Colored Gantt chart as XLSX — grouped by project (project once, collapsible
+  // outline), one column per day, stage bars colour-coded.
   const exportGanttXLSX = (list = projects, name = "ladder_gantt") => {
     const STAGE_FILL = { "Questionnaire": "FF5050", "Kickoff Meeting": "3B82F6", "UI/UX Design": "8B5CF6", "Development": "22C55E" };
     const day = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
-    const bars = [];
-    list.forEach((p) => (p.tasks || [])
-      .filter((t) => (t.row_type || "main") !== "sub" && t.startDate && t.endDate)
-      .forEach((t) => bars.push({ project: p.projectName, stage: t.name, assignee: t.assignee || "", start: day(t.startDate), end: day(t.endDate), status: t.status })));
-    if (!bars.length) { showToast(i18n.t("No dated stages to chart."), "error"); return; }
 
-    const minD = day(Math.min(...bars.map((b) => b.start.getTime())));
-    const maxD = day(Math.max(...bars.map((b) => b.end.getTime())));
-    const totalDays = Math.min(dayDiff(minD, maxD) + 1, 366);
-    const hdrStyle = { fill: { patternType: "solid", fgColor: { rgb: "1E3A5F" } }, font: { bold: true, color: { rgb: "FFFFFF" } } };
+    const times = [];
+    list.forEach((p) => (p.tasks || []).forEach((t) => { if (t.startDate && t.endDate) times.push(day(t.startDate).getTime(), day(t.endDate).getTime()); }));
+    if (!times.length) { showToast(i18n.t("No dated stages to chart."), "error"); return; }
+
+    const minD = day(Math.min(...times));
+    const totalDays = Math.min(dayDiff(minD, day(Math.max(...times))) + 1, 366);
+    const LABELS = ["Project / Stage / Task", "Assignee", "Status"];
+    const W = LABELS.length + totalDays;
+    const off = (d) => dayDiff(minD, day(d));
+
+    // Build the row plan: project header → mains → sub-tasks, with outline levels.
+    const plan = [];
+    list.forEach((p) => {
+      const mains = (p.tasks || []).filter((t) => (t.row_type || "main") !== "sub").sort((a, b) => (a.order || 0) - (b.order || 0));
+      plan.push({ level: 0, kind: "project", label: `${p.projectName}   ·   ${taskPct(p.tasks || [])}%`, c2: "", c3: p.status || "" });
+      mains.forEach((m) => {
+        plan.push({ level: 1, kind: "main", label: `    ${m.name}`, c2: m.assignee || "", c3: m.status || "", bar: m.startDate && m.endDate ? { s: off(m.startDate), e: off(m.endDate), color: STAGE_FILL[m.name] || "60A5FA" } : null });
+        (p.tasks || []).filter((t) => (t.row_type || "main") === "sub" && t.parent_id === m.task_id).sort((a, b) => (a.order || 0) - (b.order || 0))
+          .forEach((s) => plan.push({ level: 2, kind: "sub", label: `        ↳ ${s.name}`, c2: s.assignee || "", c3: s.status || "", bar: s.startDate && s.endDate ? { s: off(s.startDate), e: off(s.endDate), color: "93C5FD" } : null }));
+      });
+    });
 
     const ws = {};
     const set = (r, c, v, s) => { ws[XLSX.utils.encode_cell({ r, c })] = { t: "s", v: v == null ? "" : String(v), ...(s ? { s } : {}) }; };
-    const LABELS = ["Project", "Stage", "Assignee", "Start", "End"];
-    LABELS.forEach((l, c) => set(0, c, l, hdrStyle));
-    for (let i = 0; i < totalDays; i++) { const d = addDays(minD, i); set(0, 5 + i, `${d.getDate()}/${d.getMonth() + 1}`, hdrStyle); }
+    const hdrStyle = { fill: { patternType: "solid", fgColor: { rgb: "1E3A5F" } }, font: { bold: true, color: { rgb: "FFFFFF" } } };
 
-    bars.forEach((b, ri) => {
-      const r = ri + 1;
-      set(r, 0, b.project); set(r, 1, b.stage); set(r, 2, b.assignee);
-      set(r, 3, b.start.toISOString().slice(0, 10)); set(r, 4, b.end.toISOString().slice(0, 10));
-      const so = dayDiff(minD, b.start);
-      const eo = Math.min(dayDiff(minD, b.end), totalDays - 1);
-      const fill = STAGE_FILL[b.stage] || "60A5FA";
-      for (let c = so; c <= eo; c++) if (c >= 0 && c < totalDays) set(r, 5 + c, "", { fill: { patternType: "solid", fgColor: { rgb: fill } } });
+    // header row
+    LABELS.forEach((l, c) => set(0, c, l, hdrStyle));
+    for (let i = 0; i < totalDays; i++) { const d = addDays(minD, i); set(0, LABELS.length + i, `${d.getDate()}/${d.getMonth() + 1}`, hdrStyle); }
+
+    plan.forEach((row, i) => {
+      const r = i + 1;
+      const projStyle = row.kind === "project" ? hdrStyle : null;
+      set(r, 0, row.label, projStyle || (row.kind === "main" ? { font: { bold: true } } : null));
+      set(r, 1, row.c2, projStyle);
+      set(r, 2, row.c3, projStyle);
+      if (row.kind === "project") for (let c = 0; c < totalDays; c++) set(r, LABELS.length + c, "", hdrStyle);
+      if (row.bar) {
+        const s = Math.max(row.bar.s, 0), e = Math.min(row.bar.e, totalDays - 1);
+        for (let c = s; c <= e; c++) if (c >= 0 && c < totalDays) set(r, LABELS.length + c, "", { fill: { patternType: "solid", fgColor: { rgb: row.bar.color } } });
+      }
     });
 
-    ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: bars.length, c: 4 + totalDays } });
-    ws["!cols"] = [{ wch: 18 }, { wch: 16 }, { wch: 12 }, { wch: 11 }, { wch: 11 }, ...Array(totalDays).fill({ wch: 3.5 })];
-    ws["!freeze"] = { xSplit: 5, ySplit: 1 };
+    // today marker
+    const tOff = dayDiff(minD, day(new Date()));
+    if (tOff >= 0 && tOff < totalDays) set(0, LABELS.length + tOff, `${addDays(minD, tOff).getDate()}/${addDays(minD, tOff).getMonth() + 1}`, { fill: { patternType: "solid", fgColor: { rgb: "FF5050" } }, font: { bold: true, color: { rgb: "FFFFFF" } } });
+
+    ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: plan.length, c: W - 1 } });
+    ws["!cols"] = [{ wch: 34 }, { wch: 12 }, { wch: 12 }, ...Array(totalDays).fill({ wch: 3.2 })];
+    ws["!rows"] = [{}, ...plan.map((row) => (row.level > 0 ? { level: row.level } : {}))];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Gantt");
     const out = XLSX.write(wb, { bookType: "xlsx", type: "array" });
