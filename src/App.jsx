@@ -747,51 +747,35 @@ function TeamTab({ team, setTeam, projects }) {
 }
 
 /* ─── Google Sheets Tab ─────────────────────────────────────── */
-function SheetsTab({ onTestSync, syncStatus }) {
-  const { isMobile } = useBreakpoint();
-
+function SheetsTab({ syncStatus }) {
   return (
     <div style={{ maxWidth: 540 }}>
       <div style={{ background: SURFACE, border: `1px solid ${BORDER}`, borderRadius: 14, overflow: "hidden", boxShadow: "0 1px 4px #0001" }}>
 
         {/* Header */}
         <div style={{ padding: "18px 22px", background: HEADER_BG, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-          <div>
-            <h2 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: TEXT_ACCENT }}>Google Sheets Sync</h2>
-            <p style={{ margin: "3px 0 0", fontSize: 12, color: "#aab8cc" }}>Auto-syncs on every project save or delete.</p>
-          </div>
+          <h2 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: TEXT_ACCENT }}>Google Sheets</h2>
           <a href={SHEET_VIEW_URL} target="_blank" rel="noopener noreferrer"
             style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 16px", borderRadius: 8, border: "1px solid #3ECF8E55", background: "#3ECF8E22", color: "#3ECF8E", textDecoration: "none", fontSize: 13, fontWeight: 700, whiteSpace: "nowrap" }}>
             Open Google Sheet ↗
           </a>
         </div>
 
-        {/* Auto-sync indicator */}
-        <div style={{ padding: "10px 22px", background: "#f0fdf4", borderBottom: "1px solid #dcfce7", display: "flex", alignItems: "center", gap: 8 }}>
-          <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#22c55e", flexShrink: 0 }} />
-          <span style={{ fontSize: 13, color: "#16a34a", fontWeight: 600 }}>
-            Auto-sync active — sheet updates on every project add, edit, or delete.
-          </span>
-        </div>
-
-        {/* Last sync result */}
-        {syncStatus && (
-          <div style={{ padding: "10px 22px", borderBottom: `1px solid ${BORDER}`, background: syncStatus.ok ? "#22c55e11" : "#ef444411" }}>
-            <span style={{ fontSize: 13, fontWeight: 600, color: syncStatus.ok ? "#16a34a" : "#ef4444" }}>
+        {/* What's mirrored */}
+        <div style={{ padding: "18px 22px" }}>
+          <p style={{ margin: "0 0 12px", fontSize: 13, color: TEXT2, lineHeight: 1.5 }}>
+            These tabs update automatically whenever a project is added, edited, or deleted:
+          </p>
+          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: TEXT, lineHeight: 1.9 }}>
+            <li><strong>Website Project Tracker</strong> — one row per project with status and progress</li>
+            <li><strong>Gantt chart</strong> — every task with start, end, duration and status</li>
+            <li><strong>Timeline</strong> — all dated tasks in chronological order</li>
+          </ul>
+          {syncStatus && (
+            <div style={{ marginTop: 16, fontSize: 12, fontWeight: 600, color: syncStatus.ok ? "#16a34a" : "#ef4444" }}>
               {syncStatus.ok ? "✓ Last sync succeeded" : `✗ Last sync failed: ${syncStatus.msg}`}
-            </span>
-          </div>
-        )}
-
-        {/* Config (Secrets hidden from UI) */}
-        <div style={{ padding: "20px 22px" }}>
-          <h3 style={{ margin: "0 0 14px", fontSize: 13, fontWeight: 800, color: TEXT_ACCENT, textTransform: "uppercase", letterSpacing: 0.4 }}>Apps Script Config</h3>
-          <div style={{ fontSize: 13, color: TEXT2, marginBottom: 14 }}>
-            Secret Token and Web App URL are securely managed via environment variables (<code>.env.local</code>).
-          </div>
-          <button onClick={onTestSync} style={{ width: "100%", padding: "10px 0", borderRadius: 8, border: "none", background: HEADER_BG, color: TEXT_ACCENT, fontWeight: 700, fontSize: 14, cursor: "pointer" }}>
-            Test Sync Now
-          </button>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -1098,8 +1082,6 @@ export default function App() {
     } catch (e) { setSyncStatus({ ok: false, msg: e.message }); }
   }, []);
 
-  const onTestSync = () => syncSheets(projects);
-
   /* Save project — optimistic local update first, then background cloud sync.
      We never block the UI on the Supabase round-trip (a failed request can take
      several seconds): local state (and localStorage) is the immediate source of
@@ -1112,13 +1094,11 @@ export default function App() {
       const isNew = !form.id || !projects.some((p) => p.id === form.id);
       const finalProj = { ...form, id: form.id || crypto.randomUUID(), createdAt: form.createdAt || new Date().toISOString() };
 
-      if (isNew) {
-        setProjects((curr) => [...curr, finalProj]);
-        showToast(i18n.t("Project created successfully!"));
-      } else {
-        setProjects((curr) => curr.map((x) => (x.id === finalProj.id ? finalProj : x)));
-        showToast(i18n.t("Project updated successfully!"));
-      }
+      const next = isNew
+        ? [...projects, finalProj]
+        : projects.map((x) => (x.id === finalProj.id ? finalProj : x));
+      setProjects(next);
+      showToast(isNew ? i18n.t("Project created successfully!") : i18n.t("Project updated successfully!"));
       setModal(null);
 
       // Background cloud sync — don't await; warn (non-blocking) on failure
@@ -1134,29 +1114,9 @@ export default function App() {
         });
       }
 
-      // Sync Sheets
-      if (typeof sheetsCfg !== 'undefined' && sheetsCfg.url) {
-        const headers = ["Task ID", "Parent ID", "Type", "Order", "Name", "Assignee", "Start Date", "End Date", "Status", "Notes"];
-        const aoa = [headers];
-        const sorted = [...(finalProj.tasks || [])].sort((a,b) => a.order - b.order);
-        for (const t of sorted) {
-          aoa.push([t.task_id, t.parent_id || "", t.row_type, t.order, t.name, t.assignee, t.startDate, t.endDate, t.status, t.notes]);
-        }
-        const payload = {
-          action: "update_project",
-          project: {
-            id: finalProj.id,
-            name: finalProj.projectName,
-            client: finalProj.clientName,
-            aoa
-          }
-        };
-        fetch("/api/sync-sheets", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
-        }).catch(err => console.error("Sync error", err));
-      }
+      // Background Google Sheets sync — mirrors the full project list to the
+      // Tracker / Gantt / Timeline tabs. Non-blocking.
+      syncSheets(next);
     } catch (e) {
       showToast(i18n.t("Error saving project"), "error");
     }
@@ -1164,7 +1124,8 @@ export default function App() {
 
   const deleteProject = (id) => {
     try {
-      setProjects((curr) => curr.filter((x) => x.id !== id));
+      const next = projects.filter((x) => x.id !== id);
+      setProjects(next);
       setDelId(null);
       showToast(i18n.t("Project deleted successfully!"));
       // Background cloud sync — non-blocking
@@ -1173,6 +1134,7 @@ export default function App() {
           if (error) console.error("Supabase delete failed (removed locally):", error);
         });
       }
+      syncSheets(next);
     } catch (e) {
       showToast(i18n.t("Error deleting project"), "error");
     }
@@ -1181,7 +1143,8 @@ export default function App() {
   /* Toggle project active — optimistic local update, background cloud sync */
   const toggleProjectActive = (id, isActive) => {
     try {
-      setProjects((curr) => curr.map((p) => p.id === id ? { ...p, isActive } : p));
+      const next = projects.map((p) => p.id === id ? { ...p, isActive } : p);
+      setProjects(next);
       showToast(isActive ? i18n.t("Project set to Active") : i18n.t("Project set to Inactive"));
       if (supabase) {
         supabase.from("projects").update({ is_active: isActive }).eq("id", id).then(({ error }) => {
@@ -1191,6 +1154,7 @@ export default function App() {
           }
         });
       }
+      syncSheets(next);
     } catch (e) {
       showToast(i18n.t("Error updating project status"), "error");
     }
@@ -1468,7 +1432,7 @@ export default function App() {
 
                 {!loading && tab === "timeline" && <TimelineTab projects={projects} initialFocusId={timelineProjectId} />}
         {!loading && tab === "team" && <TeamTab team={team} setTeam={setTeam} projects={projects} />}
-        {!loading && tab === "sheets" && <SheetsTab onTestSync={onTestSync} syncStatus={syncStatus} />}
+        {!loading && tab === "sheets" && <SheetsTab syncStatus={syncStatus} />}
       </div>
 
       {/* ── Project Modal ── */}

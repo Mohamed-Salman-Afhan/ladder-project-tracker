@@ -1,226 +1,227 @@
 // Google Apps Script: sheets-worker.gs
-// Deploy as a Web App (doPost) and set SCRIPT_SECRET in the environment.
+//
+// Deploy as a Web App (Execute as: Me, Who has access: Anyone) and set the
+// Web App URL + SCRIPT_SECRET as GOOGLE_SHEETS_URL / GOOGLE_SHEETS_SECRET in the
+// app's environment (.env.local locally, Vercel project env in production).
+//
+// The app POSTs the full project list on every add / edit / delete:
+//   { secret, projects: [ { id, projectName, clientName, website, status,
+//                           tasks: [ { task_id, parent_id, row_type, order,
+//                                      name, assignee, startDate, endDate,
+//                                      status, notes } ] } ] }
+// We rebuild three tabs from it: Website Project Tracker, Gantt chart, Timeline.
 
-const MASTER_SHEET_ID = "PUT_MASTER_SHEET_ID_HERE"; // replace with your sheet id
+const MASTER_SHEET_ID = "1bgvc5kE8ELx_xg9APYfsHIY1_9bh7zl34lPJ-K-uQvM";
 const SCRIPT_SECRET = "lg-web-project-tracker-2026";
+
+const TAB_TRACKER = "Website Project Tracker";
+const TAB_GANTT = "Gantt chart";
+const TAB_TIMELINE = "Timeline";
 
 function doPost(e) {
   try {
-    const body = JSON.parse(e.postData.contents || "{}");
+    const body = JSON.parse((e && e.postData && e.postData.contents) || "{}");
     if (!body || body.secret !== SCRIPT_SECRET) {
-      return ContentService.createTextOutput(
-        JSON.stringify({ ok: false, error: "unauthorized" }),
-      ).setMimeType(ContentService.MimeType.JSON);
+      return json({ ok: false, error: "unauthorized" });
     }
 
     const ss = SpreadsheetApp.openById(MASTER_SHEET_ID);
-    ensureIndexSheet(ss);
+    const projects = Array.isArray(body.projects)
+      ? body.projects
+      : body.project
+        ? [body.project]
+        : [];
 
-    const results = [];
-    if (body.project) {
-      results.push(syncSingleProject(ss, body.project));
-    } else if (Array.isArray(body.projects)) {
-      body.projects.forEach((p) => results.push(syncSingleProject(ss, p)));
-    } else if (body.action === "delete" && body.projectId) {
-      results.push(deleteProjectSheet(ss, body.projectId));
-    } else if (body.action === "delete" && body.project && body.project.id) {
-      results.push(deleteProjectSheet(ss, body.project.id));
-    }
+    buildTracker(ss, projects);
+    buildGantt(ss, projects);
+    buildTimeline(ss, projects);
 
-    return ContentService.createTextOutput(
-      JSON.stringify({ ok: true, results }),
-    ).setMimeType(ContentService.MimeType.JSON);
+    return json({ ok: true, synced: projects.length });
   } catch (err) {
-    return ContentService.createTextOutput(
-      JSON.stringify({ ok: false, error: err.message }),
-    ).setMimeType(ContentService.MimeType.JSON);
+    return json({ ok: false, error: err.message });
   }
 }
 
-function ensureIndexSheet(ss) {
-  let idx = ss.getSheetByName("__projects_index");
-  if (!idx) {
-    idx = ss.insertSheet("__projects_index");
-    idx
-      .getRange(1, 1, 1, 7)
-      .setValues([
-        [
-          "project_id",
-          "sheet_name",
-          "project_name",
-          "client",
-          "last_synced_iso",
-          "sync_status",
-          "migrated_version",
-        ],
-      ]);
-  }
+/* ── helpers ─────────────────────────────────────────────────────────── */
+
+function json(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(
+    ContentService.MimeType.JSON,
+  );
 }
 
-function sanitizeTitle(t) {
-  return t.replace(/[\\\\:\\\/\\?\\*\\[\\]]/g, " ").substring(0, 100);
+function getTab(ss, name) {
+  return ss.getSheetByName(name) || ss.insertSheet(name);
 }
 
-function projectToAOA(p) {
+function tasksOf(p) {
+  if (Array.isArray(p.tasks)) return p.tasks;
+  if (Array.isArray(p.stages)) return p.stages;
+  return [];
+}
+
+function isSub(t) {
+  return (t.row_type || "main") === "sub";
+}
+
+function pct(tasks) {
+  if (!tasks.length) return 0;
+  const done = tasks.filter((t) => t.status === "Completed").length;
+  return Math.round((done / tasks.length) * 100);
+}
+
+function durationDays(start, end) {
+  if (!start || !end) return "";
+  const d = Math.round((new Date(end) - new Date(start)) / 86400000) + 1;
+  return isNaN(d) ? "" : d;
+}
+
+function fmtDate(d) {
+  if (!d) return "";
+  const dt = new Date(d);
+  if (isNaN(dt)) return d;
+  return Utilities.formatDate(dt, Session.getScriptTimeZone(), "yyyy-MM-dd");
+}
+
+// Clear the tab and write a header + rows, with a styled, frozen header.
+function writeTab(sheet, header, rows) {
+  sheet.clear();
+  const width = header.length;
+  const padded = rows.map((r) => {
+    const a = r.slice(0, width);
+    while (a.length < width) a.push("");
+    return a;
+  });
+  const all = [header].concat(padded);
+  sheet.getRange(1, 1, all.length, width).setValues(all);
+  sheet
+    .getRange(1, 1, 1, width)
+    .setFontWeight("bold")
+    .setBackground("#1f2937")
+    .setFontColor("#ffffff");
+  sheet.setFrozenRows(1);
+  sheet.autoResizeColumns(1, width);
+}
+
+/* ── Website Project Tracker: one row per project ────────────────────── */
+
+function buildTracker(ss, projects) {
+  const header = [
+    "Project",
+    "Client",
+    "Website",
+    "Status",
+    "Progress %",
+    "Tasks Done",
+    "Tasks Total",
+    "Start",
+    "End",
+    "Last Updated",
+  ];
+  const today = fmtDate(new Date());
+  const rows = projects.map((p) => {
+    const ts = tasksOf(p);
+    const dated = ts.filter((t) => t.startDate || t.endDate);
+    const starts = dated
+      .map((t) => new Date(t.startDate || t.endDate))
+      .filter((d) => !isNaN(d));
+    const ends = dated
+      .map((t) => new Date(t.endDate || t.startDate))
+      .filter((d) => !isNaN(d));
+    return [
+      p.projectName || "",
+      p.clientName || "",
+      p.website || "",
+      p.status || "",
+      pct(ts),
+      ts.filter((t) => t.status === "Completed").length,
+      ts.length,
+      starts.length ? fmtDate(new Date(Math.min.apply(null, starts))) : "",
+      ends.length ? fmtDate(new Date(Math.max.apply(null, ends))) : "",
+      today,
+    ];
+  });
+  writeTab(getTab(ss, TAB_TRACKER), header, rows);
+}
+
+/* ── Gantt chart: one row per task, subtasks nested under their parent ── */
+
+function buildGantt(ss, projects) {
+  const header = [
+    "Project",
+    "Task",
+    "Type",
+    "Assignee",
+    "Start",
+    "End",
+    "Duration (days)",
+    "Status",
+    "Progress %",
+  ];
   const rows = [];
-  rows.push([
-    "row_type",
-    "task_id",
-    "parent_id",
-    "order",
-    "name",
-    "assignee",
-    "stage",
-    "start_date",
-    "end_date",
-    "duration_days",
-    "progress_pct",
-    "status",
-    "notes",
-  ]);
-  rows.push([
-    "meta",
-    "project_id:" + p.id,
-    "",
-    "",
-    "",
-    "Project: " + (p.projectName || ""),
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "Client: " + (p.clientName || ""),
-  ]);
-  // tasks: here we use stages as main tasks and assume p.stages may contain subtasks under `subtasks` property
-  if (Array.isArray(p.stages)) {
-    p.stages.forEach((s, si) => {
-      const mainId = `m-${si + 1}`;
+  projects.forEach((p) => {
+    const ts = tasksOf(p);
+    const mains = ts
+      .filter((t) => !isSub(t))
+      .sort((a, b) => (a.order || 0) - (b.order || 0));
+    mains.forEach((m) => {
       rows.push([
-        "main",
-        mainId,
-        "",
-        si + 1,
-        s.name || "",
-        s.assignee || "",
-        s.name || "",
-        s.startDate || "",
-        s.endDate || "",
-        s.startDate && s.endDate
-          ? Math.round(
-              (new Date(s.endDate) - new Date(s.startDate)) / 86400000,
-            ) + 1
-          : "",
-        s.progress_pct || "",
-        s.status || "",
-        s.notes || "",
+        p.projectName || "",
+        m.name || "",
+        "Main",
+        m.assignee || "",
+        fmtDate(m.startDate),
+        fmtDate(m.endDate),
+        durationDays(m.startDate, m.endDate),
+        m.status || "",
+        m.status === "Completed" ? 100 : "",
       ]);
-      if (Array.isArray(s.subtasks)) {
-        s.subtasks.forEach((t, ti) => {
+      ts
+        .filter((t) => isSub(t) && t.parent_id === m.task_id)
+        .sort((a, b) => (a.order || 0) - (b.order || 0))
+        .forEach((s) => {
           rows.push([
-            "sub",
-            t.task_id || `s-${si + 1}-${ti + 1}`,
-            mainId,
-            `${si + 1}.${ti + 1}`,
-            t.name || "",
-            t.assignee || "",
-            s.name || "",
-            t.startDate || "",
-            t.endDate || "",
-            t.startDate && t.endDate
-              ? Math.round(
-                  (new Date(t.endDate) - new Date(t.startDate)) / 86400000,
-                ) + 1
-              : "",
-            t.progress_pct || "",
-            t.status || "",
-            t.notes || "",
+            p.projectName || "",
+            "    ↳ " + (s.name || ""),
+            "Sub",
+            s.assignee || "",
+            fmtDate(s.startDate),
+            fmtDate(s.endDate),
+            durationDays(s.startDate, s.endDate),
+            s.status || "",
+            s.status === "Completed" ? 100 : "",
           ]);
         });
-      }
     });
-  }
-  return rows;
+  });
+  writeTab(getTab(ss, TAB_GANTT), header, rows);
 }
 
-function syncSingleProject(ss, p) {
-  const sheetName = sanitizeTitle(
-    "Project — " + (p.slug || p.projectName || p.id),
+/* ── Timeline: all dated tasks across projects, chronological ─────────── */
+
+function buildTimeline(ss, projects) {
+  const header = ["Start", "End", "Project", "Task", "Assignee", "Status"];
+  const rows = [];
+  projects.forEach((p) => {
+    tasksOf(p).forEach((t) => {
+      if (!t.startDate && !t.endDate) return;
+      rows.push({
+        sortKey: new Date(t.startDate || t.endDate).getTime() || 0,
+        cells: [
+          fmtDate(t.startDate),
+          fmtDate(t.endDate),
+          p.projectName || "",
+          t.name || "",
+          t.assignee || "",
+          t.status || "",
+        ],
+      });
+    });
+  });
+  rows.sort((a, b) => a.sortKey - b.sortKey);
+  writeTab(
+    getTab(ss, TAB_TIMELINE),
+    header,
+    rows.map((r) => r.cells),
   );
-  let sheet = ss.getSheetByName(sheetName);
-  if (!sheet) sheet = ss.insertSheet(sheetName);
-  const aoa = projectToAOA(p);
-  sheet.clear();
-  sheet.getRange(1, 1, aoa.length, aoa[0].length).setValues(aoa);
-
-  // Optionally create row groups for each main task's subtasks using Advanced Sheets API
-  // This requires enabling the Sheets API and using UrlFetch with OAuth. For simplicity we skip grouping here.
-
-  updateIndexSheet(
-    ss,
-    p.id,
-    sheetName,
-    p.projectName || "",
-    p.clientName || "",
-    new Date().toISOString(),
-    "ok",
-    "v1",
-  );
-  return { projectId: p.id, sheet: sheetName };
-}
-
-function updateIndexSheet(
-  ss,
-  projectId,
-  sheetName,
-  projectName,
-  client,
-  iso,
-  status,
-  ver,
-) {
-  const idx = ss.getSheetByName("__projects_index");
-  const data = idx.getDataRange().getValues();
-  const header = data[0];
-  let found = -1;
-  for (let i = 1; i < data.length; i++) {
-    if (data[i][0] === projectId) {
-      found = i;
-      break;
-    }
-  }
-  const row = [
-    projectId,
-    sheetName,
-    projectName,
-    client,
-    iso,
-    status,
-    ver || "v1",
-  ];
-  if (found >= 0) idx.getRange(found + 1, 1, 1, row.length).setValues([row]);
-  else idx.appendRow(row);
-}
-
-function deleteProjectSheet(ss, projectId) {
-  const idx = ss.getSheetByName("__projects_index");
-  if (!idx) return { ok: false, reason: "index_missing" };
-  const data = idx.getDataRange().getValues();
-  let sheetName = null;
-  let found = -1;
-  for (let i = 1; i < data.length; i++) {
-    if (data[i][0] === projectId) {
-      sheetName = data[i][1];
-      found = i;
-      break;
-    }
-  }
-  if (sheetName) {
-    const sheet = ss.getSheetByName(sheetName);
-    if (sheet) ss.deleteSheet(sheet);
-    idx.deleteRow(found + 1);
-    return { ok: true, deleted: sheetName };
-  }
-  return { ok: false, reason: "not_found" };
 }
