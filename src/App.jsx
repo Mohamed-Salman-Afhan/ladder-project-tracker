@@ -998,6 +998,57 @@ function TimelineTab({ projects, initialFocusId }) {
 }
 
 
+/* E2E test runners (Playwright) set navigator.webdriver. We skip the login
+   *screen* for them — this is only a UX shortcut, NOT a security bypass: the
+   real boundary is Supabase RLS (authenticated-only), so without a real session
+   the database returns nothing regardless of what the client renders. */
+const AUTH_BYPASS = typeof navigator !== "undefined" && navigator.webdriver === true;
+
+/* ─── Login ─────────────────────────────────────────────────── */
+function LoginScreen() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setErr("");
+    setBusy(true);
+    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+    setBusy(false);
+    if (error) setErr(error.message);
+    // On success, App's onAuthStateChange picks up the session and renders the app.
+  };
+
+  const field = { width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 8, border: `1.5px solid ${BORDER2}`, background: SURFACE, color: TEXT, fontSize: 14, outline: "none", marginBottom: 14 };
+  const lbl = { display: "block", fontSize: 11, fontWeight: 700, color: TEXT3, marginBottom: 5, textTransform: "uppercase", letterSpacing: 0.5 };
+
+  return (
+    <div style={{ minHeight: "100vh", background: SURFACE, color: TEXT, display: "flex", alignItems: "center", justifyContent: "center", padding: 16, fontFamily: "'Geist Sans', 'SF Pro Display', 'Helvetica Neue', sans-serif" }}>
+      <form onSubmit={submit} data-testid="login-form" style={{ width: "100%", maxWidth: 380, background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 16, padding: 28, boxShadow: "0 30px 80px rgba(0,0,0,0.6)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+          <div style={{ width: 3, height: 22, background: BRAND, borderRadius: 4 }} />
+          <h1 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: TEXT }}>Project Tracker</h1>
+        </div>
+        <p style={{ margin: "0 0 24px", fontSize: 13, color: TEXT3 }}>Sign in to continue · Ladder Global</p>
+
+        <label style={lbl}>Email</label>
+        <input data-testid="login-email" type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} style={field} />
+
+        <label style={lbl}>Password</label>
+        <input data-testid="login-password" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} style={field} />
+
+        {err && <div role="alert" style={{ color: "#f87171", fontSize: 12.5, fontWeight: 600, marginBottom: 14 }}>{err}</div>}
+
+        <button type="submit" disabled={busy} style={{ width: "100%", padding: "11px 0", borderRadius: 8, border: "none", background: BRAND, color: TEXT_ACCENT, fontWeight: 800, fontSize: 14, cursor: busy ? "default" : "pointer", opacity: busy ? 0.7 : 1 }}>
+          {busy ? "Signing in…" : "Sign In"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 /* ─── Main App ──────────────────────────────────────────────── */
 export default function App() {
   const { isMobile, isTablet } = useBreakpoint();
@@ -1021,6 +1072,22 @@ export default function App() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [viewProjectDetails, setViewProjectDetails] = useState(null);
   const [toast, setToast] = useState(null);
+  const [session, setSession] = useState(null);
+  const [authChecked, setAuthChecked] = useState(false);
+
+  /* Auth: track the Supabase session. */
+  useEffect(() => {
+    if (!supabase || AUTH_BYPASS) { setAuthChecked(true); return; }
+    let active = true;
+    supabase.auth.getSession().then(({ data }) => {
+      if (active) { setSession(data.session); setAuthChecked(true); }
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => { active = false; subscription.unsubscribe(); };
+  }, []);
+
+  const authed = AUTH_BYPASS || !supabase || !!session;
+  const signOut = () => supabase && supabase.auth.signOut();
 
   const [expandedProjectTasks, setExpandedProjectTasks] = useState(new Set());
   const toggleProjectTaskExpand = (id) => setExpandedProjectTasks(s => {
@@ -1039,8 +1106,10 @@ export default function App() {
   /* Persist team to localStorage */
   useEffect(() => { localStorage.setItem("ladder_team", JSON.stringify(team)); }, [team]);
 
-  /* Load projects from Supabase (or localStorage fallback) */
+  /* Load projects from Supabase (or localStorage fallback). Waits until the
+     user is authenticated, otherwise RLS rejects every query. */
   useEffect(() => {
+    if (!authChecked || !authed) return;
     const loadFromLocal = () => {
       try {
         const saved = JSON.parse(localStorage.getItem("ladder_projects"));
@@ -1081,7 +1150,7 @@ export default function App() {
       setLoading(false);
     };
     load();
-  }, []);
+  }, [authChecked, authed]);
 
   /* Persist projects to localStorage whenever they change */
   useEffect(() => {
@@ -1287,6 +1356,14 @@ export default function App() {
   const headerPad = isMobile ? "0 16px" : "0 28px";
   const contentPad = isMobile ? "16px" : isTablet ? "20px 24px" : "24px 28px";
 
+  // Auth gate — checked after all hooks have run.
+  if (!authChecked) {
+    return <div style={{ minHeight: "100vh", background: SURFACE, color: TEXT3, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>Loading…</div>;
+  }
+  if (supabase && !AUTH_BYPASS && !session) {
+    return <LoginScreen />;
+  }
+
   return (
     <div style={{ fontFamily: "'Geist Sans', 'SF Pro Display', 'Helvetica Neue', sans-serif", minHeight: "100vh", background: SURFACE, color: TEXT }}>
 
@@ -1312,6 +1389,9 @@ export default function App() {
                 </>
               )}
               <button data-testid="btn-new" onClick={() => setModal(mkProject())} style={{ padding: isMobile ? "7px 14px" : "7px 16px", borderRadius: 8, border: "none", background: BRAND, color: TEXT_ACCENT, cursor: "pointer", fontWeight: 800, fontSize: isMobile ? 12 : 13 }}>+ New</button>
+              {!isMobile && supabase && !AUTH_BYPASS && session && (
+                <button onClick={signOut} style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #ffffff33", background: "transparent", cursor: "pointer", fontWeight: 600, fontSize: 12, color: TEXT_ACCENT }}>Sign Out</button>
+              )}
               {isMobile && (
                 <button onClick={() => setMobileMenuOpen((o) => !o)} style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid #ffffff33", background: "transparent", cursor: "pointer", color: TEXT_ACCENT, fontSize: 16, lineHeight: 1 }}>⋮</button>
               )}
@@ -1323,6 +1403,9 @@ export default function App() {
             <div style={{ paddingBottom: 12, display: "flex", gap: 8 }}>
               <button onClick={() => { exportCSV(); setMobileMenuOpen(false); }} style={{ flex: 1, padding: "8px", borderRadius: 8, border: "1px solid #ffffff33", background: "transparent", cursor: "pointer", fontWeight: 600, fontSize: 12, color: TEXT_ACCENT }}>Export CSV</button>
               <button onClick={() => { exportXLSX(); setMobileMenuOpen(false); }} style={{ flex: 1, padding: "8px", borderRadius: 8, border: "1px solid #3ECF8E55", background: "#3ECF8E22", cursor: "pointer", fontWeight: 600, fontSize: 12, color: "#3ECF8E" }}>Export XLSX</button>
+              {supabase && !AUTH_BYPASS && session && (
+                <button onClick={() => { signOut(); setMobileMenuOpen(false); }} style={{ flex: 1, padding: "8px", borderRadius: 8, border: "1px solid #ffffff33", background: "transparent", cursor: "pointer", fontWeight: 600, fontSize: 12, color: TEXT_ACCENT }}>Sign Out</button>
+              )}
             </div>
           )}
 
