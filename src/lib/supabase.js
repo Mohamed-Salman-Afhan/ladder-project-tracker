@@ -14,7 +14,8 @@ export const toDb = (p) => ({
   client_name: p.clientName,
   website: p.website || "",
   status: p.status,
-  stages: p.stages,
+  stages: p.tasks,
+  is_active: p.isActive !== false,
 });
 
 export const fromDb = (r) => ({
@@ -23,5 +24,12 @@ export const fromDb = (r) => ({
   clientName: r.client_name,
   website: r.website || "",
   status: r.status,
-  stages: r.stages || [],
+  tasks: (r.stages || []).map((t, i) => ({
+    ...t,
+    task_id: t.task_id || crypto.randomUUID(),
+    row_type: t.row_type || "main",
+    order: t.order !== undefined ? t.order : i,
+    assignee: t.assignee ? t.assignee.replace(" LG", "").trim() : "",
+  })),
+  isActive: r.is_active !== false,
 });
