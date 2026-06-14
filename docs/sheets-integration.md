@@ -28,36 +28,48 @@ src/App.jsx  ──POST {projects:[…]}──▶  /api/sync-sheets  ──+ sec
 
 ## The three tabs (rebuilt on every sync)
 
-**Website Project Tracker** — one row per project:
-`Project · Client · Website · Status · Progress % · Tasks Done · Tasks Total · Start · End · Last Updated`
+**Website-Project-Tracker** — one row per project, with each of the four workflow
+stages and overall progress:
+`Project · Client · Website · Status · Progress % · Questionnaire · Q Assignee · Kickoff Meeting · KM Assignee · UI/UX Design · UI Assignee · Development · Dev Assignee · Last Updated`
 
-**Gantt chart** — one row per task, subtasks nested under their parent (indented):
-`Project · Task · Type · Assignee · Start · End · Duration (days) · Status · Progress %`
+**Timeline** — one row per dated stage across all projects (status colour-coded):
+`Project · Client · Stage · Assignee · Start Date · End Date · Duration (Days) · Status · Notes`
 
-**Timeline** — every dated task across all projects, sorted chronologically:
-`Start · End · Project · Task · Assignee · Status`
+**Gantt** — a visual day-by-day chart: fixed label columns plus one column per day,
+with each stage drawn as a colour-coded bar and a "today" marker.
 
-Each sync `clear()`s and rewrites these three tabs, so they always reflect current
-state. Other tabs in the spreadsheet are left untouched.
+Each sync clears and rewrites these tabs, so they always reflect current state.
+Other tabs in the spreadsheet are left untouched.
 
 ## Request payload
+
+The app shapes the payload to match the worker — `projects[]` drives the tracker
+tab, `timeline[]` drives the Timeline and Gantt tabs:
 
 ```json
 {
   "secret": "…",
   "projects": [
     {
-      "id": "uuid",
       "projectName": "Website Redesign",
       "clientName": "Acme Ltd",
       "website": "https://acme.com",
       "status": "In Progress",
-      "tasks": [
-        { "task_id": "…", "parent_id": null, "row_type": "main", "order": 1,
-          "name": "Questionnaire", "assignee": "Alice",
-          "startDate": "2026-05-01", "endDate": "2026-05-05",
-          "status": "Completed", "notes": "" }
+      "progress": 50,
+      "stages": [
+        { "status": "Completed", "assignee": "Alice" },
+        { "status": "In Progress", "assignee": "Bob" },
+        { "status": "Not Started", "assignee": "" },
+        { "status": "Not Started", "assignee": "" }
       ]
+    }
+  ],
+  "timeline": [
+    {
+      "project": "Website Redesign", "client": "Acme Ltd",
+      "stage": "Questionnaire", "assignee": "Alice",
+      "startDate": "2026-05-01", "endDate": "2026-05-05",
+      "durationDays": 5, "status": "Completed", "notes": ""
     }
   ]
 }

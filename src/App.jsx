@@ -767,9 +767,9 @@ function SheetsTab({ syncStatus }) {
             These tabs update automatically whenever a project is added, edited, or deleted:
           </p>
           <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: TEXT, lineHeight: 1.9 }}>
-            <li><strong>Website Project Tracker</strong> — one row per project with status and progress</li>
-            <li><strong>Gantt chart</strong> — every task with start, end, duration and status</li>
-            <li><strong>Timeline</strong> — all dated tasks in chronological order</li>
+            <li><strong>Website-Project-Tracker</strong> — one row per project with each stage's status and overall progress</li>
+            <li><strong>Timeline</strong> — every dated stage with start, end and duration</li>
+            <li><strong>Gantt</strong> — a visual day-by-day chart of all stages</li>
           </ul>
           {syncStatus && (
             <div style={{ marginTop: 16, fontSize: 12, fontWeight: 600, color: syncStatus.ok ? "#16a34a" : "#ef4444" }}>
@@ -1066,16 +1066,47 @@ export default function App() {
     if (!loading) localStorage.setItem("ladder_projects", JSON.stringify(projects));
   }, [projects, loading]);
 
-  /* Google Sheets sync */
+  /* Google Sheets sync — shapes the payload to match the Apps Script worker:
+     - projects[]: one entry per project with the four workflow stages in order
+       (the worker reads stages[0..3] for the stage columns) plus overall progress.
+     - timeline[]: one flat row per dated stage, used for the Timeline + Gantt tabs. */
   const syncSheets = useCallback(async (ps) => {
     try {
-      const payload = {
-        projects: ps.map((p) => ({ ...p, progress: taskPct(p.tasks || p.stages || []) })),
-      };
+      const mainsOf = (p) => (p.tasks || p.stages || [])
+        .filter((t) => (t.row_type || "main") !== "sub")
+        .sort((a, b) => (a.order || 0) - (b.order || 0));
+      const durDays = (s, e) =>
+        s && e ? Math.round((new Date(e) - new Date(s)) / 86400000) + 1 : "";
+
+      const projects = ps.map((p) => ({
+        projectName: p.projectName,
+        clientName: p.clientName,
+        website: p.website || "",
+        status: p.status,
+        progress: taskPct(p.tasks || p.stages || []),
+        stages: mainsOf(p).map((t) => ({ status: t.status, assignee: t.assignee || "" })),
+      }));
+
+      const timeline = ps.flatMap((p) =>
+        mainsOf(p)
+          .filter((t) => t.startDate || t.endDate)
+          .map((t) => ({
+            project: p.projectName,
+            client: p.clientName,
+            stage: t.name,
+            assignee: t.assignee || "",
+            startDate: t.startDate || "",
+            endDate: t.endDate || "",
+            durationDays: durDays(t.startDate, t.endDate),
+            status: t.status,
+            notes: t.notes || "",
+          })),
+      );
+
       const res = await fetch("/api/sync-sheets", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ projects, timeline }),
       });
       const data = await res.json();
       setSyncStatus({ ok: data.ok, msg: data.error || "" });

@@ -1,227 +1,209 @@
-// Google Apps Script: sheets-worker.gs
+// ─── Ladder Global – Project Tracker Sync ───────────────────
+// Deploy as Web App: Execute as → Me | Who has access → Anyone
+// Re-deploy after any change: Deploy → Manage deployments → Edit → New version → Deploy
 //
-// Deploy as a Web App (Execute as: Me, Who has access: Anyone) and set the
-// Web App URL + SCRIPT_SECRET as GOOGLE_SHEETS_URL / GOOGLE_SHEETS_SECRET in the
-// app's environment (.env.local locally, Vercel project env in production).
-//
-// The app POSTs the full project list on every add / edit / delete:
-//   { secret, projects: [ { id, projectName, clientName, website, status,
-//                           tasks: [ { task_id, parent_id, row_type, order,
-//                                      name, assignee, startDate, endDate,
-//                                      status, notes } ] } ] }
-// We rebuild three tabs from it: Website Project Tracker, Gantt chart, Timeline.
+// Payload sent by the app (src/App.jsx → syncSheets):
+//   { secret, projects: [ { projectName, clientName, website, status, progress,
+//                           stages: [ { status, assignee }, …4 ] } ],
+//            timeline: [ { project, client, stage, assignee, startDate, endDate,
+//                          durationDays, status, notes } ] }
+// ────────────────────────────────────────────────────────────
 
-const MASTER_SHEET_ID = "1bgvc5kE8ELx_xg9APYfsHIY1_9bh7zl34lPJ-K-uQvM";
-const SCRIPT_SECRET = "lg-web-project-tracker-2026";
-
-const TAB_TRACKER = "Website Project Tracker";
-const TAB_GANTT = "Gantt chart";
-const TAB_TIMELINE = "Timeline";
+const SECRET = "lg-web-project-tracker-2026";
+const SPREADSHEET_ID = "1bgvc5kE8ELx_xg9APYfsHIY1_9bh7zl34lPJ-K-uQvM";
+const PROJECTS_SHEET = "Website-Project-Tracker";
+const TIMELINE_SHEET = "Timeline";
+const GANTT_SHEET    = "Gantt";
 
 function doPost(e) {
   try {
-    const body = JSON.parse((e && e.postData && e.postData.contents) || "{}");
-    if (!body || body.secret !== SCRIPT_SECRET) {
-      return json({ ok: false, error: "unauthorized" });
+    const data = JSON.parse(e.postData.contents);
+
+    if (data.secret !== SECRET) {
+      return json({ ok: false, error: "Unauthorized" });
     }
 
-    const ss = SpreadsheetApp.openById(MASTER_SHEET_ID);
-    const projects = Array.isArray(body.projects)
-      ? body.projects
-      : body.project
-        ? [body.project]
-        : [];
+    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
 
-    buildTracker(ss, projects);
-    buildGantt(ss, projects);
-    buildTimeline(ss, projects);
+    // ── Projects sheet ──────────────────────────────────────
+    let pSheet = getOrCreate(ss, PROJECTS_SHEET);
+    const pHeaders = [
+      "Project", "Client", "Website", "Status", "Progress %",
+      "Questionnaire", "Q Assignee",
+      "Kickoff Meeting", "KM Assignee",
+      "UI/UX Design", "UI Assignee",
+      "Development", "Dev Assignee", "Last Updated"
+    ];
+    pSheet.clear();
+    pSheet.appendRow(pHeaders);
+    styleHeader(pSheet, pHeaders.length, "FF5050");
 
-    return json({ ok: true, synced: projects.length });
+    (data.projects || []).forEach(p => {
+      const s = p.stages || [];
+      pSheet.appendRow([
+        p.projectName, p.clientName, p.website || "", p.status, (p.progress || 0) + "%",
+        s[0]?.status || "", s[0]?.assignee || "",
+        s[1]?.status || "", s[1]?.assignee || "",
+        s[2]?.status || "", s[2]?.assignee || "",
+        s[3]?.status || "", s[3]?.assignee || "",
+        new Date().toLocaleString()
+      ]);
+    });
+    pSheet.autoResizeColumns(1, pHeaders.length);
+
+    // ── Timeline sheet ──────────────────────────────────────
+    const timelineRows = data.timeline || [];
+    let tSheet = getOrCreate(ss, TIMELINE_SHEET);
+    const tHeaders = [
+      "Project", "Client", "Stage", "Assignee",
+      "Start Date", "End Date", "Duration (Days)", "Status", "Notes"
+    ];
+    tSheet.clear(); // clear() (not clearContents) so stale status colours are wiped
+    tSheet.appendRow(tHeaders);
+    styleHeader(tSheet, tHeaders.length, "1E3A5F");
+
+    timelineRows.forEach(r => {
+      tSheet.appendRow([
+        r.project || "", r.client || "", r.stage || "", r.assignee || "",
+        r.startDate || "", r.endDate || "",
+        r.durationDays != null && r.durationDays !== "" ? Number(r.durationDays) : "",
+        r.status || "", r.notes || ""
+      ]);
+    });
+
+    // Colour-code Status column (col 8)
+    timelineRows.forEach((r, i) => {
+      const bg = statusColor(r.status);
+      if (bg) tSheet.getRange(i + 2, 8).setBackground(bg).setFontColor("#ffffff");
+    });
+    tSheet.autoResizeColumns(1, tHeaders.length);
+
+    // ── Gantt sheet ─────────────────────────────────────────
+    const dated = timelineRows.filter(r => r.startDate && r.endDate);
+    if (dated.length > 0) {
+      buildGanttSheet(ss, dated);
+    } else {
+      // No dated stages — clear any stale chart so it doesn't show old bars
+      const g = ss.getSheetByName(GANTT_SHEET);
+      if (g) { g.clearContents(); g.clearFormats(); }
+    }
+
+    return json({ ok: true });
+
   } catch (err) {
-    return json({ ok: false, error: err.message });
+    return json({ ok: false, error: err.toString() });
   }
 }
 
-/* ── helpers ─────────────────────────────────────────────────────────── */
+// ── Gantt builder ────────────────────────────────────────────
+
+function buildGanttSheet(ss, rows) {
+  const STAGE_COLORS = {
+    "Questionnaire":   "#FF5050",
+    "Kickoff Meeting": "#3B82F6",
+    "UI/UX Design":    "#8B5CF6",
+    "Development":     "#22C55E"
+  };
+
+  const tz = Session.getScriptTimeZone();
+  const toDay = str => { const d = new Date(str); d.setHours(0,0,0,0); return d; };
+
+  const allDates = rows.flatMap(r => [toDay(r.startDate), toDay(r.endDate)]);
+  const minDate  = new Date(Math.min(...allDates.map(d => d.getTime())));
+  const maxDate  = new Date(Math.max(...allDates.map(d => d.getTime())));
+  const totalDays = Math.min(Math.round((maxDate - minDate) / 86400000) + 1, 365);
+
+  let gSheet = ss.getSheetByName(GANTT_SHEET);
+  if (!gSheet) gSheet = ss.insertSheet(GANTT_SHEET);
+  gSheet.clearContents();
+  gSheet.clearFormats();
+
+  // Fixed column widths
+  gSheet.setColumnWidth(1, 150);  // Project
+  gSheet.setColumnWidth(2, 130);  // Stage
+  gSheet.setColumnWidth(3, 110);  // Assignee
+  gSheet.setColumnWidth(4, 100);  // Status
+  for (let c = 5; c <= 4 + totalDays; c++) gSheet.setColumnWidth(c, 28);
+
+  // Header row
+  const headerVals = [["Project", "Stage", "Assignee", "Status"]];
+  for (let i = 0; i < totalDays; i++) {
+    const d = new Date(minDate.getTime() + i * 86400000);
+    headerVals[0].push(Utilities.formatDate(d, tz, "d-MMM"));
+  }
+  gSheet.getRange(1, 1, 1, headerVals[0].length).setValues(headerVals);
+  styleHeader(gSheet, headerVals[0].length, "1E3A5F");
+
+  // Today marker
+  const today = new Date(); today.setHours(0,0,0,0);
+  const todayOff = Math.round((today - minDate) / 86400000);
+  if (todayOff >= 0 && todayOff < totalDays) {
+    gSheet.getRange(1, 5 + todayOff)
+      .setBackground("#FF5050")
+      .setFontColor("#FFFFFF");
+  }
+
+  // Data rows + bars
+  rows.forEach((r, idx) => {
+    const rowNum = idx + 2;
+    gSheet.getRange(rowNum, 1, 1, 4).setValues([[
+      r.project || "", r.stage || "", r.assignee || "", r.status || ""
+    ]]);
+
+    const start = toDay(r.startDate);
+    const end   = toDay(r.endDate);
+    const startOff = Math.round((start - minDate) / 86400000);
+    const endOff   = Math.round((end   - minDate) / 86400000);
+    const clampedEnd = Math.min(endOff, totalDays - 1);
+
+    if (startOff <= clampedEnd && startOff < totalDays) {
+      const color = STAGE_COLORS[r.stage] || "#60A5FA";
+      gSheet.getRange(rowNum, 5 + startOff, 1, clampedEnd - startOff + 1)
+        .setBackground(color);
+    }
+  });
+
+  // Alternate row shading for readability
+  rows.forEach((_, idx) => {
+    if (idx % 2 === 1) {
+      gSheet.getRange(idx + 2, 1, 1, 4)
+        .setBackground("#F8F9FA");
+    }
+  });
+
+  gSheet.setFrozenRows(1);
+  gSheet.setFrozenColumns(4);
+}
+
+// ── Helpers ──────────────────────────────────────────────────
+
+function getOrCreate(ss, name) {
+  let sheet = ss.getSheetByName(name);
+  if (!sheet) sheet = ss.insertSheet(name);
+  return sheet;
+}
 
 function json(obj) {
-  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(
-    ContentService.MimeType.JSON,
-  );
+  return ContentService
+    .createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
 }
 
-function getTab(ss, name) {
-  return ss.getSheetByName(name) || ss.insertSheet(name);
-}
-
-function tasksOf(p) {
-  if (Array.isArray(p.tasks)) return p.tasks;
-  if (Array.isArray(p.stages)) return p.stages;
-  return [];
-}
-
-function isSub(t) {
-  return (t.row_type || "main") === "sub";
-}
-
-function pct(tasks) {
-  if (!tasks.length) return 0;
-  const done = tasks.filter((t) => t.status === "Completed").length;
-  return Math.round((done / tasks.length) * 100);
-}
-
-function durationDays(start, end) {
-  if (!start || !end) return "";
-  const d = Math.round((new Date(end) - new Date(start)) / 86400000) + 1;
-  return isNaN(d) ? "" : d;
-}
-
-function fmtDate(d) {
-  if (!d) return "";
-  const dt = new Date(d);
-  if (isNaN(dt)) return d;
-  return Utilities.formatDate(dt, Session.getScriptTimeZone(), "yyyy-MM-dd");
-}
-
-// Clear the tab and write a header + rows, with a styled, frozen header.
-function writeTab(sheet, header, rows) {
-  sheet.clear();
-  const width = header.length;
-  const padded = rows.map((r) => {
-    const a = r.slice(0, width);
-    while (a.length < width) a.push("");
-    return a;
-  });
-  const all = [header].concat(padded);
-  sheet.getRange(1, 1, all.length, width).setValues(all);
-  sheet
-    .getRange(1, 1, 1, width)
+function styleHeader(sheet, colCount, hexBg) {
+  sheet.getRange(1, 1, 1, colCount)
     .setFontWeight("bold")
-    .setBackground("#1f2937")
-    .setFontColor("#ffffff");
-  sheet.setFrozenRows(1);
-  sheet.autoResizeColumns(1, width);
+    .setBackground("#" + hexBg)
+    .setFontColor("#FFFFFF");
 }
 
-/* ── Website Project Tracker: one row per project ────────────────────── */
-
-function buildTracker(ss, projects) {
-  const header = [
-    "Project",
-    "Client",
-    "Website",
-    "Status",
-    "Progress %",
-    "Tasks Done",
-    "Tasks Total",
-    "Start",
-    "End",
-    "Last Updated",
-  ];
-  const today = fmtDate(new Date());
-  const rows = projects.map((p) => {
-    const ts = tasksOf(p);
-    const dated = ts.filter((t) => t.startDate || t.endDate);
-    const starts = dated
-      .map((t) => new Date(t.startDate || t.endDate))
-      .filter((d) => !isNaN(d));
-    const ends = dated
-      .map((t) => new Date(t.endDate || t.startDate))
-      .filter((d) => !isNaN(d));
-    return [
-      p.projectName || "",
-      p.clientName || "",
-      p.website || "",
-      p.status || "",
-      pct(ts),
-      ts.filter((t) => t.status === "Completed").length,
-      ts.length,
-      starts.length ? fmtDate(new Date(Math.min.apply(null, starts))) : "",
-      ends.length ? fmtDate(new Date(Math.max.apply(null, ends))) : "",
-      today,
-    ];
-  });
-  writeTab(getTab(ss, TAB_TRACKER), header, rows);
-}
-
-/* ── Gantt chart: one row per task, subtasks nested under their parent ── */
-
-function buildGantt(ss, projects) {
-  const header = [
-    "Project",
-    "Task",
-    "Type",
-    "Assignee",
-    "Start",
-    "End",
-    "Duration (days)",
-    "Status",
-    "Progress %",
-  ];
-  const rows = [];
-  projects.forEach((p) => {
-    const ts = tasksOf(p);
-    const mains = ts
-      .filter((t) => !isSub(t))
-      .sort((a, b) => (a.order || 0) - (b.order || 0));
-    mains.forEach((m) => {
-      rows.push([
-        p.projectName || "",
-        m.name || "",
-        "Main",
-        m.assignee || "",
-        fmtDate(m.startDate),
-        fmtDate(m.endDate),
-        durationDays(m.startDate, m.endDate),
-        m.status || "",
-        m.status === "Completed" ? 100 : "",
-      ]);
-      ts
-        .filter((t) => isSub(t) && t.parent_id === m.task_id)
-        .sort((a, b) => (a.order || 0) - (b.order || 0))
-        .forEach((s) => {
-          rows.push([
-            p.projectName || "",
-            "    ↳ " + (s.name || ""),
-            "Sub",
-            s.assignee || "",
-            fmtDate(s.startDate),
-            fmtDate(s.endDate),
-            durationDays(s.startDate, s.endDate),
-            s.status || "",
-            s.status === "Completed" ? 100 : "",
-          ]);
-        });
-    });
-  });
-  writeTab(getTab(ss, TAB_GANTT), header, rows);
-}
-
-/* ── Timeline: all dated tasks across projects, chronological ─────────── */
-
-function buildTimeline(ss, projects) {
-  const header = ["Start", "End", "Project", "Task", "Assignee", "Status"];
-  const rows = [];
-  projects.forEach((p) => {
-    tasksOf(p).forEach((t) => {
-      if (!t.startDate && !t.endDate) return;
-      rows.push({
-        sortKey: new Date(t.startDate || t.endDate).getTime() || 0,
-        cells: [
-          fmtDate(t.startDate),
-          fmtDate(t.endDate),
-          p.projectName || "",
-          t.name || "",
-          t.assignee || "",
-          t.status || "",
-        ],
-      });
-    });
-  });
-  rows.sort((a, b) => a.sortKey - b.sortKey);
-  writeTab(
-    getTab(ss, TAB_TIMELINE),
-    header,
-    rows.map((r) => r.cells),
-  );
+function statusColor(status) {
+  switch ((status || "").toLowerCase()) {
+    case "complete":
+    case "completed":    return "#16A34A";
+    case "in progress":  return "#2563EB";
+    case "not started":  return "#6B7280";
+    case "blocked":
+    case "on hold":      return "#DC2626";
+    default:             return null;
+  }
 }
