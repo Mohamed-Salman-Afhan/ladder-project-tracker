@@ -10,6 +10,14 @@ import { test, expect } from '@playwright/test';
 test.beforeEach(async ({ page }) => {
   await page.route(/supabase\.co/, (route) => route.abort());
   await page.route(/script\.google\.com/, (route) => route.abort());
+  // Stub the sync endpoint so tests never reach the real Google Apps Script.
+  // NOTE: /api/sync-sheets is handled server-side by the Vite dev middleware,
+  // which forwards to the live GOOGLE_SHEETS_URL — a browser-level abort of
+  // script.google.com does NOT stop it. This stub prevents polluting the sheet.
+  // (The auto-sync tests register their own /api/sync-sheets route, which wins.)
+  await page.route('**/api/sync-sheets', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) }),
+  );
   await page.addInitScript(() => localStorage.clear());
   await page.goto('/');
   await expect(page.getByTestId('loading')).toBeHidden({ timeout: 15000 });

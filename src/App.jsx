@@ -1113,6 +1113,17 @@ export default function App() {
     } catch (e) { setSyncStatus({ ok: false, msg: e.message }); }
   }, []);
 
+  /* Initial backfill: once projects have loaded, mirror the current list to
+     Google Sheets exactly once. Without this, the sheet only reflects projects
+     that are added/edited/deleted after load — existing projects would never
+     appear. Runs after `loading` flips false so it sees the loaded data. */
+  const didInitialSync = useRef(false);
+  useEffect(() => {
+    if (loading || didInitialSync.current) return;
+    didInitialSync.current = true;
+    syncSheets(projects);
+  }, [loading, projects, syncSheets]);
+
   /* Save project — optimistic local update first, then background cloud sync.
      We never block the UI on the Supabase round-trip (a failed request can take
      several seconds): local state (and localStorage) is the immediate source of

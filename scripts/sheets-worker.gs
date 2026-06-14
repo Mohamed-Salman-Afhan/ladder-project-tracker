@@ -118,6 +118,18 @@ function buildGanttSheet(ss, rows) {
   gSheet.clearContents();
   gSheet.clearFormats();
 
+  // A sheet defaults to 26 columns / 1000 rows. The day grid needs one column
+  // per day (up to 365) plus 4 label columns — grow the sheet first, otherwise
+  // setColumnWidth/setValues throw "out of bounds" for wide date ranges.
+  const neededCols = 4 + totalDays;
+  if (gSheet.getMaxColumns() < neededCols) {
+    gSheet.insertColumnsAfter(gSheet.getMaxColumns(), neededCols - gSheet.getMaxColumns());
+  }
+  const neededRows = rows.length + 1;
+  if (gSheet.getMaxRows() < neededRows) {
+    gSheet.insertRowsAfter(gSheet.getMaxRows(), neededRows - gSheet.getMaxRows());
+  }
+
   // Fixed column widths
   gSheet.setColumnWidth(1, 150);  // Project
   gSheet.setColumnWidth(2, 130);  // Stage
