@@ -92,6 +92,20 @@ const taskPct = (ts) => {
     : 0;
 };
 
+// Shared task helpers (used by sync, exports, and the in-app views) — keep a
+// single definition so the mains/subs/duration semantics can't drift.
+const mainsOf = (p) => (p.tasks || p.stages || [])
+  .filter((t) => (t.row_type || "main") !== "sub")
+  .sort((a, b) => (a.order || 0) - (b.order || 0));
+const subsOf = (p, m) => (p.tasks || [])
+  .filter((t) => (t.row_type || "main") === "sub" && t.parent_id === m.task_id)
+  .sort((a, b) => (a.order || 0) - (b.order || 0));
+const durDays = (s, e) => {
+  if (!s || !e) return "";
+  const d = Math.round((new Date(e) - new Date(s)) / 86400000) + 1;
+  return d < 1 ? "" : d; // guard end-before-start (free-text dates)
+};
+
 const buildHierarchy = (tasks = []) => {
   const safeTasks = tasks.map((t, i) => ({ ...t, task_id: t.task_id || `legacy-${i}` }));
   const byId = new Map(safeTasks.map(t => [t.task_id, { ...t, subtasks: [] }]));
@@ -959,7 +973,6 @@ function TimelineTab({ projects, initialFocusId }) {
                      if (subEnds.length > 0) mainEnd = new Date(Math.max(...subEnds)).toISOString().split('T')[0];
                   }
                   
-                  const done = mTask.status === "Completed";
                   const col = STAGE_PALETTE[mTask.name] || { bar: BRAND, bg: BRAND_DIM };
 
                   return (
@@ -1231,7 +1244,6 @@ export default function App() {
     }
   });
   const [tab, setTab] = useState("dashboard");
-  const [timelineProjectId, setTimelineProjectId] = useState(null);
   const [modal, setModal] = useState(null);
   const [delId, setDelId] = useState(null);
   const [search, setSearch] = useState("");
@@ -1336,14 +1348,6 @@ export default function App() {
        collapsible Timeline + Gantt tabs. */
   const syncSheets = useCallback(async (ps) => {
     try {
-      const mainsOf = (p) => (p.tasks || p.stages || [])
-        .filter((t) => (t.row_type || "main") !== "sub")
-        .sort((a, b) => (a.order || 0) - (b.order || 0));
-      const subsOf = (p, m) => (p.tasks || [])
-        .filter((t) => (t.row_type || "main") === "sub" && t.parent_id === m.task_id)
-        .sort((a, b) => (a.order || 0) - (b.order || 0));
-      const durDays = (s, e) =>
-        s && e ? Math.round((new Date(e) - new Date(s)) / 86400000) + 1 : "";
       const node = (t) => ({
         name: t.name || "",
         assignee: t.assignee || "",
@@ -1476,26 +1480,19 @@ export default function App() {
      the indentation in column A gives the hierarchy in CSV (which has no grouping). */
   const buildTreeRows = (list = projects) => {
     const header = ["Project / Stage / Task", "Assignee", "Start", "End", "Duration (Days)", "Status", "Notes"];
-    const dur = (s, e) => (s && e ? Math.round((new Date(e) - new Date(s)) / 86400000) + 1 : "");
     const rows = [header];
     const levels = [0];      // outline level per row (0 = none)
     const kinds = ["header"]; // header | project | main | sub
     list.forEach((p) => {
-      const mains = (p.tasks || [])
-        .filter((t) => (t.row_type || "main") !== "sub")
-        .sort((a, b) => (a.order || 0) - (b.order || 0));
       rows.push([`${p.projectName}   ·   ${taskPct(p.tasks || [])}%`, "", "", "", "", p.status || "", ""]);
       levels.push(0); kinds.push("project");
-      mains.forEach((m) => {
-        rows.push([`    ${m.name}`, m.assignee || "", m.startDate || "", m.endDate || "", dur(m.startDate, m.endDate), m.status || "", m.notes || ""]);
+      mainsOf(p).forEach((m) => {
+        rows.push([`    ${m.name}`, m.assignee || "", m.startDate || "", m.endDate || "", durDays(m.startDate, m.endDate), m.status || "", m.notes || ""]);
         levels.push(1); kinds.push("main");
-        (p.tasks || [])
-          .filter((t) => (t.row_type || "main") === "sub" && t.parent_id === m.task_id)
-          .sort((a, b) => (a.order || 0) - (b.order || 0))
-          .forEach((s) => {
-            rows.push([`        ↳ ${s.name}`, s.assignee || "", s.startDate || "", s.endDate || "", dur(s.startDate, s.endDate), s.status || "", s.notes || ""]);
-            levels.push(2); kinds.push("sub");
-          });
+        subsOf(p, m).forEach((s) => {
+          rows.push([`        ↳ ${s.name}`, s.assignee || "", s.startDate || "", s.endDate || "", durDays(s.startDate, s.endDate), s.status || "", s.notes || ""]);
+          levels.push(2); kinds.push("sub");
+        });
       });
     });
     return { rows, levels, kinds };
@@ -1560,12 +1557,10 @@ export default function App() {
     // Build the row plan: project header → mains → sub-tasks, with outline levels.
     const plan = [];
     list.forEach((p) => {
-      const mains = (p.tasks || []).filter((t) => (t.row_type || "main") !== "sub").sort((a, b) => (a.order || 0) - (b.order || 0));
       plan.push({ level: 0, kind: "project", label: `${p.projectName}   ·   ${taskPct(p.tasks || [])}%`, c2: "", c3: p.status || "" });
-      mains.forEach((m) => {
+      mainsOf(p).forEach((m) => {
         plan.push({ level: 1, kind: "main", label: `    ${m.name}`, c2: m.assignee || "", c3: m.status || "", bar: m.startDate && m.endDate ? { s: off(m.startDate), e: off(m.endDate), color: STAGE_FILL[m.name] || "60A5FA" } : null });
-        (p.tasks || []).filter((t) => (t.row_type || "main") === "sub" && t.parent_id === m.task_id).sort((a, b) => (a.order || 0) - (b.order || 0))
-          .forEach((s) => plan.push({ level: 2, kind: "sub", label: `        ↳ ${s.name}`, c2: s.assignee || "", c3: s.status || "", bar: s.startDate && s.endDate ? { s: off(s.startDate), e: off(s.endDate), color: "93C5FD" } : null }));
+        subsOf(p, m).forEach((s) => plan.push({ level: 2, kind: "sub", label: `        ↳ ${s.name}`, c2: s.assignee || "", c3: s.status || "", bar: s.startDate && s.endDate ? { s: off(s.startDate), e: off(s.endDate), color: "93C5FD" } : null }));
       });
     });
 
@@ -1847,7 +1842,7 @@ export default function App() {
             })}
         </>}
 
-                {!loading && tab === "timeline" && <TimelineTab projects={projects} initialFocusId={timelineProjectId} />}
+                {!loading && tab === "timeline" && <TimelineTab projects={projects} initialFocusId={null} />}
         {!loading && tab === "team" && <TeamTab team={team} setTeam={setTeam} projects={projects} />}
         {!loading && tab === "sheets" && <SheetsTab syncStatus={syncStatus} />}
         {!loading && tab === "account" && <AccountTab session={session} isAdmin={isAdmin} />}

@@ -21,7 +21,6 @@ const TIMELINE_SHEET = "Timeline";
 const GANTT_SHEET = "Gantt";
 
 const NAVY = "#1E3A5F";
-const PROJECT_BG = "#1E3A5F";
 const MAIN_BG = "#EEF2F7";
 const SUB_BG = "#F8FAFC";
 const STAGE_COLORS = {
@@ -154,7 +153,7 @@ function buildTimeline(ss, tree) {
 
   // project header rows
   projectRows.forEach((r) => {
-    sh.getRange(r + 1, 1, 1, W).setBackground(PROJECT_BG).setFontColor("#ffffff").setFontWeight("bold");
+    sh.getRange(r + 1, 1, 1, W).setBackground(NAVY).setFontColor("#ffffff").setFontWeight("bold");
   });
   // status cell tint
   statusCells.forEach((sc) => { const bg = statusBg(sc.status); if (bg) sh.getRange(sc.row + 1, 6).setBackground(bg); });
@@ -245,7 +244,7 @@ function buildGantt(ss, tree) {
   for (let c = LABELS.length + 1; c <= W; c++) sh.setColumnWidth(c, 26);
 
   // project header rows
-  projectRows.forEach((r) => sh.getRange(r + 1, 1, 1, W).setBackground(PROJECT_BG).setFontColor("#ffffff").setFontWeight("bold"));
+  projectRows.forEach((r) => sh.getRange(r + 1, 1, 1, W).setBackground(NAVY).setFontColor("#ffffff").setFontWeight("bold"));
 
   // bars
   bars.forEach((b) => {
