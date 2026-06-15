@@ -10,6 +10,14 @@ import { test, expect } from '@playwright/test';
 test.beforeEach(async ({ page }) => {
   await page.route(/supabase\.co/, (route) => route.abort());
   await page.route(/script\.google\.com/, (route) => route.abort());
+  // Stub the sync endpoint so tests never reach the real Google Apps Script.
+  // NOTE: /api/sync-sheets is handled server-side by the Vite dev middleware,
+  // which forwards to the live GOOGLE_SHEETS_URL — a browser-level abort of
+  // script.google.com does NOT stop it. This stub prevents polluting the sheet.
+  // (The auto-sync tests register their own /api/sync-sheets route, which wins.)
+  await page.route('**/api/sync-sheets', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) }),
+  );
   await page.addInitScript(() => localStorage.clear());
   await page.goto('/');
   await expect(page.getByTestId('loading')).toBeHidden({ timeout: 15000 });
@@ -275,6 +283,55 @@ test('toggles a project between active and inactive (soft delete)', async ({ pag
   // Reactivate
   await card.getByRole('button', { name: 'Set Active' }).click();
   await expect(card.getByRole('button', { name: 'Set Inactive' })).toBeVisible();
+});
+
+// ─── Google Sheets Auto-Sync ───────────────────────────────────────────────────
+
+test('auto-syncs the project list to Google Sheets on save', async ({ page }) => {
+  const syncs = [];
+  await page.route('**/api/sync-sheets', async (route) => {
+    syncs.push(route.request().postDataJSON());
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
+  });
+
+  const projectName = `Sync_${Date.now()}`;
+  await page.getByTestId('btn-new').click();
+  await page.getByTestId('input-projectName').fill(projectName);
+  await page.getByTestId('input-clientName').fill('Sync Client');
+  await page.getByTestId('btn-save').click();
+  await expect(page.getByTestId('project-modal')).toBeHidden();
+
+  // The save fires a background POST carrying the full project list
+  await expect.poll(() => syncs.length, { timeout: 5000 }).toBeGreaterThan(0);
+  const last = syncs[syncs.length - 1];
+  expect(Array.isArray(last.projects)).toBe(true);
+  expect(last.projects.some((p) => p.projectName === projectName)).toBe(true);
+});
+
+test('auto-syncs to Google Sheets on delete', async ({ page }) => {
+  // Create first (this also triggers a sync we ignore)
+  const projectName = `SyncDel_${Date.now()}`;
+  await page.getByTestId('btn-new').click();
+  await page.getByTestId('input-projectName').fill(projectName);
+  await page.getByTestId('input-clientName').fill('Sync Client');
+  await page.getByTestId('btn-save').click();
+  await expect(page.getByTestId('project-modal')).toBeHidden();
+
+  // Start capturing only after creation
+  const syncs = [];
+  await page.route('**/api/sync-sheets', async (route) => {
+    syncs.push(route.request().postDataJSON());
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
+  });
+
+  await page.getByRole('button', { name: 'Projects' }).click();
+  const card = page.locator('[data-testid^="project-card-"]').filter({ hasText: projectName });
+  await card.getByRole('button', { name: 'Delete' }).click();
+  await page.getByTestId('btn-confirm-delete').click();
+
+  await expect.poll(() => syncs.length, { timeout: 5000 }).toBeGreaterThan(0);
+  const last = syncs[syncs.length - 1];
+  expect(last.projects.some((p) => p.projectName === projectName)).toBe(false);
 });
 
 // ─── Search & Filter ─────────────────────────────────────────────────────────

@@ -37,10 +37,6 @@ const INIT_TEAM = [
   { id: "3", name: "Salman", role: "Developer", is_active: true },
   { id: "4", name: "Janith", role: "Designer", is_active: true }
 ];
-const SHEETS_DEFAULTS = {
-  url: "https://script.google.com/macros/s/AKfycbzuPa5HwBMz84G4WbOudvA0Yw0R9zKIiziRRz2LDS-KQZVB7-FTJGYbBFd331ZNVI98HA/exec",
-  secret: "lg-web-project-tracker-2026",
-};
 const SHEET_VIEW_URL = "https://docs.google.com/spreadsheets/d/1bgvc5kE8ELx_xg9APYfsHIY1_9bh7zl34lPJ-K-uQvM/edit";
 
 const addDays = (date, days) => {
@@ -78,7 +74,33 @@ const mkProject = () => ({
   tasks: STAGES.map((s, i) => mkTask(s, "main", null, i + 1)),
 });
 
-const taskPct = (ts) => ts.length ? Math.round(ts.filter((x) => x.status === "Completed").length / ts.length * 100) : 0;
+// Progress counts only ACTIVE tasks — inactive main tasks (and the subtasks
+// beneath them) are excluded from both the numerator and the denominator.
+const taskPct = (ts) => {
+  const inactiveMains = new Set(
+    ts.filter((t) => (t.row_type || "main") !== "sub" && t.isActive === false).map((t) => t.task_id)
+  );
+  const counted = ts.filter(
+    (t) => t.isActive !== false && !(t.parent_id && inactiveMains.has(t.parent_id))
+  );
+  return counted.length
+    ? Math.round((counted.filter((x) => x.status === "Completed").length / counted.length) * 100)
+    : 0;
+};
+
+// Shared task helpers (used by sync, exports, and the in-app views) — keep a
+// single definition so the mains/subs/duration semantics can't drift.
+const mainsOf = (p) => (p.tasks || p.stages || [])
+  .filter((t) => (t.row_type || "main") !== "sub")
+  .sort((a, b) => (a.order || 0) - (b.order || 0));
+const subsOf = (p, m) => (p.tasks || [])
+  .filter((t) => (t.row_type || "main") === "sub" && t.parent_id === m.task_id)
+  .sort((a, b) => (a.order || 0) - (b.order || 0));
+const durDays = (s, e) => {
+  if (!s || !e) return "";
+  const d = Math.round((new Date(e) - new Date(s)) / 86400000) + 1;
+  return d < 1 ? "" : d; // guard end-before-start (free-text dates)
+};
 
 const buildHierarchy = (tasks = []) => {
   const safeTasks = tasks.map((t, i) => ({ ...t, task_id: t.task_id || `legacy-${i}` }));
@@ -480,46 +502,56 @@ function ProjectModal({ project, team, onSave, onClose }) {
                       <button onClick={() => setTask(mainTask.task_id, "isActive", mainTask.isActive === false)} style={{ ...sinp, width: "auto", cursor: "pointer", color: mainTask.isActive === false ? "#4ade80" : "#f59e0b", border: `1px solid ${mainTask.isActive === false ? "#22c55e44" : "#f59e0b44"}` }}>
                         {mainTask.isActive === false ? i18n.t("Set Active") : i18n.t("Set Inactive")}
                       </button>
+                      <button
+                        data-testid={`btn-delete-main-${mainTask.task_id}`}
+                        onClick={() => {
+                          const hasSubs = mainTask.subtasks.length > 0;
+                          if (!hasSubs || window.confirm(i18n.t("Delete this main task and its sub-tasks?"))) {
+                            removeTask(mainTask.task_id);
+                          }
+                        }}
+                        style={{ ...sinp, width: "auto", cursor: "pointer", color: "#f87171", border: "1px solid #ef444444" }}
+                      >
+                        {i18n.t("Delete")}
+                      </button>
                     </div>
                   </div>
-                  
-                  {mainTask.subtasks.length === 0 ? (
-                    <>
-                     <div
-                     style={{
-                       display: "grid",
-                       gridTemplateColumns: isMobile ? "1fr 1fr" : "1fr 1fr 1fr 1fr",
-                       gap: 9,
-                     }}
-                   >
-                     {/* Same fields as subtask but for main task */}
-                     <div>
-                       <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: TEXT3, marginBottom: 3, textTransform: "uppercase" }}>{i18n.t("Assigned To")}</label>
-                       <select value={mainTask.assignee} onChange={(e) => setTask(mainTask.task_id, "assignee", e.target.value)} style={{ ...sinp, background: SURFACE }}>
-                         <option value="">{i18n.t("— Select —")}</option>
-                         {team.filter(t => t.is_active !== false).map((t) => <option key={t.id} value={t.name}>{t.name}</option>)}
-                       </select>
-                     </div>
-                     <div>
-                        <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: TEXT3, marginBottom: 3, textTransform: "uppercase" }}>{i18n.t("Start Date")}</label>
-                        <input type="date" value={mainTask.startDate} onChange={(e) => setTask(mainTask.task_id, "startDate", e.target.value)} style={{ ...sinp, colorScheme: "dark" }} />
-                     </div>
-                     <div>
-                        <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: TEXT3, marginBottom: 3, textTransform: "uppercase" }}>{i18n.t("End Date")}</label>
-                        <input type="date" value={mainTask.endDate} onChange={(e) => setTask(mainTask.task_id, "endDate", e.target.value)} style={{ ...sinp, colorScheme: "dark" }} />
-                     </div>
-                     <div>
-                       <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: TEXT3, marginBottom: 3, textTransform: "uppercase" }}>{i18n.t("Status")}</label>
-                       <select value={mainTask.status} onChange={(e) => setTask(mainTask.task_id, "status", e.target.value)} style={{ ...sinp, background: SURFACE }}>
-                         {STATUSES.map((s) => <option key={s}>{i18n.t(s)}</option>)}
-                       </select>
-                     </div>
-                   </div>
-                   <div style={{ marginTop: 10 }}>
-                     <input placeholder={i18n.t("Add notes (optional)...")} value={mainTask.notes || ""} onChange={(e) => setTask(mainTask.task_id, "notes", e.target.value)} style={{ ...sinp, width: "100%", background: SURFACE }} />
-                   </div>
-                   </>
-                  ) : (
+
+                  {/* Main task's own fields — always editable, even when it has sub-tasks */}
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: isMobile ? "1fr 1fr" : "1fr 1fr 1fr 1fr",
+                      gap: 9,
+                    }}
+                  >
+                    <div>
+                      <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: TEXT3, marginBottom: 3, textTransform: "uppercase" }}>{i18n.t("Assigned To")}</label>
+                      <select value={mainTask.assignee} onChange={(e) => setTask(mainTask.task_id, "assignee", e.target.value)} style={{ ...sinp, background: SURFACE }}>
+                        <option value="">{i18n.t("— Select —")}</option>
+                        {team.filter(t => t.is_active !== false).map((t) => <option key={t.id} value={t.name}>{t.name}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: TEXT3, marginBottom: 3, textTransform: "uppercase" }}>{i18n.t("Start Date")}</label>
+                      <input type="date" value={mainTask.startDate} onChange={(e) => setTask(mainTask.task_id, "startDate", e.target.value)} style={{ ...sinp, colorScheme: "dark" }} />
+                    </div>
+                    <div>
+                      <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: TEXT3, marginBottom: 3, textTransform: "uppercase" }}>{i18n.t("End Date")}</label>
+                      <input type="date" value={mainTask.endDate} onChange={(e) => setTask(mainTask.task_id, "endDate", e.target.value)} style={{ ...sinp, colorScheme: "dark" }} />
+                    </div>
+                    <div>
+                      <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: TEXT3, marginBottom: 3, textTransform: "uppercase" }}>{i18n.t("Status")}</label>
+                      <select value={mainTask.status} onChange={(e) => setTask(mainTask.task_id, "status", e.target.value)} style={{ ...sinp, background: SURFACE }}>
+                        {STATUSES.map((s) => <option key={s}>{i18n.t(s)}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <div style={{ marginTop: 2 }}>
+                    <input placeholder={i18n.t("Add notes (optional)...")} value={mainTask.notes || ""} onChange={(e) => setTask(mainTask.task_id, "notes", e.target.value)} style={{ ...sinp, width: "100%", background: SURFACE }} />
+                  </div>
+
+                  {mainTask.subtasks.length > 0 && (
                     <div style={{ marginLeft: 20, display: "grid", gap: 10, borderLeft: `2px solid ${BORDER2}`, paddingLeft: 14 }}>
                       {mainTask.subtasks.map((sub, j) => (
                         <div key={sub.task_id} style={{ display: "grid", gap: 8, background: SURFACE, padding: 10, borderRadius: 8, border: `1px solid ${BORDER}` }}>
@@ -747,51 +779,35 @@ function TeamTab({ team, setTeam, projects }) {
 }
 
 /* ─── Google Sheets Tab ─────────────────────────────────────── */
-function SheetsTab({ onTestSync, syncStatus }) {
-  const { isMobile } = useBreakpoint();
-
+function SheetsTab({ syncStatus }) {
   return (
     <div style={{ maxWidth: 540 }}>
       <div style={{ background: SURFACE, border: `1px solid ${BORDER}`, borderRadius: 14, overflow: "hidden", boxShadow: "0 1px 4px #0001" }}>
 
         {/* Header */}
         <div style={{ padding: "18px 22px", background: HEADER_BG, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-          <div>
-            <h2 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: TEXT_ACCENT }}>Google Sheets Sync</h2>
-            <p style={{ margin: "3px 0 0", fontSize: 12, color: "#aab8cc" }}>Auto-syncs on every project save or delete.</p>
-          </div>
+          <h2 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: TEXT_ACCENT }}>Google Sheets</h2>
           <a href={SHEET_VIEW_URL} target="_blank" rel="noopener noreferrer"
             style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 16px", borderRadius: 8, border: "1px solid #3ECF8E55", background: "#3ECF8E22", color: "#3ECF8E", textDecoration: "none", fontSize: 13, fontWeight: 700, whiteSpace: "nowrap" }}>
             Open Google Sheet ↗
           </a>
         </div>
 
-        {/* Auto-sync indicator */}
-        <div style={{ padding: "10px 22px", background: "#f0fdf4", borderBottom: "1px solid #dcfce7", display: "flex", alignItems: "center", gap: 8 }}>
-          <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#22c55e", flexShrink: 0 }} />
-          <span style={{ fontSize: 13, color: "#16a34a", fontWeight: 600 }}>
-            Auto-sync active — sheet updates on every project add, edit, or delete.
-          </span>
-        </div>
-
-        {/* Last sync result */}
-        {syncStatus && (
-          <div style={{ padding: "10px 22px", borderBottom: `1px solid ${BORDER}`, background: syncStatus.ok ? "#22c55e11" : "#ef444411" }}>
-            <span style={{ fontSize: 13, fontWeight: 600, color: syncStatus.ok ? "#16a34a" : "#ef4444" }}>
+        {/* What's mirrored */}
+        <div style={{ padding: "18px 22px" }}>
+          <p style={{ margin: "0 0 12px", fontSize: 13, color: TEXT2, lineHeight: 1.5 }}>
+            These tabs update automatically whenever a project is added, edited, or deleted:
+          </p>
+          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: TEXT, lineHeight: 1.9 }}>
+            <li><strong>Website-Project-Tracker</strong> — one row per project with each stage's status and overall progress</li>
+            <li><strong>Timeline</strong> — grouped by project (collapsible), with stages and sub-tasks nested underneath</li>
+            <li><strong>Gantt</strong> — grouped day-by-day chart with colour-coded bars per stage</li>
+          </ul>
+          {syncStatus && (
+            <div style={{ marginTop: 16, fontSize: 12, fontWeight: 600, color: syncStatus.ok ? "#16a34a" : "#ef4444" }}>
               {syncStatus.ok ? "✓ Last sync succeeded" : `✗ Last sync failed: ${syncStatus.msg}`}
-            </span>
-          </div>
-        )}
-
-        {/* Config (Secrets hidden from UI) */}
-        <div style={{ padding: "20px 22px" }}>
-          <h3 style={{ margin: "0 0 14px", fontSize: 13, fontWeight: 800, color: TEXT_ACCENT, textTransform: "uppercase", letterSpacing: 0.4 }}>Apps Script Config</h3>
-          <div style={{ fontSize: 13, color: TEXT2, marginBottom: 14 }}>
-            Secret Token and Web App URL are securely managed via environment variables (<code>.env.local</code>).
-          </div>
-          <button onClick={onTestSync} style={{ width: "100%", padding: "10px 0", borderRadius: 8, border: "none", background: HEADER_BG, color: TEXT_ACCENT, fontWeight: 700, fontSize: 14, cursor: "pointer" }}>
-            Test Sync Now
-          </button>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -953,7 +969,6 @@ function TimelineTab({ projects, initialFocusId }) {
                      if (subEnds.length > 0) mainEnd = new Date(Math.max(...subEnds)).toISOString().split('T')[0];
                   }
                   
-                  const done = mTask.status === "Completed";
                   const col = STAGE_PALETTE[mTask.name] || { bar: BRAND, bg: BRAND_DIM };
 
                   return (
@@ -992,6 +1007,225 @@ function TimelineTab({ projects, initialFocusId }) {
 }
 
 
+/* E2E test runners (Playwright) set navigator.webdriver. We skip the login
+   *screen* for them — this is only a UX shortcut, NOT a security bypass: the
+   real boundary is Supabase RLS (authenticated-only), so without a real session
+   the database returns nothing regardless of what the client renders. */
+const AUTH_BYPASS = typeof navigator !== "undefined" && navigator.webdriver === true;
+
+/* ─── Download menu ─────────────────────────────────────────── */
+function DownloadMenu({ projects, onCSV, onXLSX, onGantt, isMobile }) {
+  const [open, setOpen] = useState(false);
+  const [scope, setScope] = useState("all");
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const h = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+
+  const run = (fn, suffix) => {
+    const list = scope === "all" ? projects : projects.filter((p) => p.id === scope);
+    const proj = scope === "all" ? null : projects.find((p) => p.id === scope);
+    const base = proj ? `ladder_${(proj.projectName || "project").replace(/\s+/g, "_")}` : "ladder_all_projects";
+    fn(list, `${base}_${suffix}`);
+    setOpen(false);
+  };
+
+  const item = { width: "100%", textAlign: "left", padding: "9px 12px", borderRadius: 8, border: `1px solid ${BORDER2}`, background: SURFACE2, color: TEXT, fontWeight: 700, fontSize: 13, cursor: "pointer" };
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <button onClick={() => setOpen((o) => !o)} style={{ padding: isMobile ? "8px 14px" : "7px 16px", borderRadius: 8, border: "1px solid #3ECF8E55", background: "#3ECF8E22", cursor: "pointer", fontWeight: 700, fontSize: isMobile ? 12 : 13, color: "#3ECF8E", width: isMobile ? "100%" : "auto" }}>
+        Download ▾
+      </button>
+      {open && (
+        <div style={{ position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 50, width: 260, background: SURFACE, border: `1px solid ${BORDER}`, borderRadius: 12, boxShadow: "0 20px 50px rgba(0,0,0,0.6)", padding: 12 }}>
+          <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: TEXT3, marginBottom: 5, textTransform: "uppercase", letterSpacing: 0.5 }}>Scope</label>
+          <select value={scope} onChange={(e) => setScope(e.target.value)} style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${BORDER2}`, background: SURFACE2, color: TEXT, fontSize: 13, marginBottom: 12, outline: "none" }}>
+            <option value="all">All projects</option>
+            {projects.map((p) => <option key={p.id} value={p.id}>{p.projectName}</option>)}
+          </select>
+          <div style={{ display: "grid", gap: 7 }}>
+            <button style={item} onClick={() => run(onXLSX, "projects")}>Projects — Excel (.xlsx)</button>
+            <button style={item} onClick={() => run(onCSV, "projects")}>Projects — CSV</button>
+            <button style={{ ...item, borderColor: "#3ECF8E55", color: "#3ECF8E" }} onClick={() => run(onGantt, "gantt")}>Gantt chart — Excel (.xlsx)</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── Account ───────────────────────────────────────────────── */
+function AccountTab({ session, isAdmin }) {
+  const user = session?.user;
+
+  // Change own password
+  const [newPw, setNewPw] = useState("");
+  const [pwBusy, setPwBusy] = useState(false);
+  const [pwMsg, setPwMsg] = useState(null);
+  const changePassword = async (e) => {
+    e.preventDefault();
+    if (newPw.length < 8) { setPwMsg({ ok: false, t: "Password must be at least 8 characters." }); return; }
+    setPwBusy(true); setPwMsg(null);
+    const { error } = await supabase.auth.updateUser({ password: newPw });
+    setPwBusy(false);
+    setPwMsg(error ? { ok: false, t: error.message } : { ok: true, t: "Password updated." });
+    if (!error) setNewPw("");
+  };
+
+  // Admin: create a login (auto temp password)
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null); // { email, password } | { error }
+  const createUser = async (e) => {
+    e.preventDefault();
+    setBusy(true); setResult(null);
+    try {
+      const { data: { session: s } } = await supabase.auth.getSession();
+      const res = await fetch("/api/create-user", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${s?.access_token || ""}` },
+        body: JSON.stringify({ email: email.trim(), role: role.trim() }),
+      });
+      const data = await res.json();
+      if (data.ok) { setResult({ email: data.email, password: data.password }); setEmail(""); setRole(""); }
+      else setResult({ error: data.error || "Failed to create user." });
+    } catch (err) { setResult({ error: err.message }); }
+    setBusy(false);
+  };
+
+  const card = { background: SURFACE, border: `1px solid ${BORDER}`, borderRadius: 14, overflow: "hidden", marginBottom: 18 };
+  const head = { padding: "16px 22px", background: HEADER_BG, borderBottom: `1px solid ${BORDER}` };
+  const body = { padding: "20px 22px" };
+  const field = { width: "100%", boxSizing: "border-box", padding: "9px 12px", borderRadius: 8, border: `1.5px solid ${BORDER2}`, background: SURFACE2, color: TEXT, fontSize: 14, outline: "none" };
+  const lbl = { display: "block", fontSize: 11, fontWeight: 700, color: TEXT3, marginBottom: 5, textTransform: "uppercase", letterSpacing: 0.5 };
+  const btn = (bg, fg) => ({ padding: "10px 18px", borderRadius: 8, border: "none", background: bg, color: fg, fontWeight: 800, fontSize: 13, cursor: "pointer" });
+
+  if (!user) {
+    return <div style={{ ...card, ...body, maxWidth: 520, color: TEXT3, fontSize: 13 }}>Not signed in.</div>;
+  }
+
+  return (
+    <div style={{ maxWidth: 520 }}>
+      {/* Profile */}
+      <div style={card}>
+        <div style={head}>
+          <h2 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: TEXT_ACCENT }}>Your Account</h2>
+        </div>
+        <div style={body}>
+          <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 18 }}>
+            <div style={{ width: 46, height: 46, borderRadius: "50%", background: BRAND, color: TEXT_ACCENT, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 20, textTransform: "uppercase" }}>
+              {(user.email || "?")[0]}
+            </div>
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: TEXT }}>{user.email}</div>
+              <div style={{ fontSize: 12, color: TEXT3, marginTop: 2 }}>
+                {user.user_metadata?.role || "Team member"}{isAdmin ? " · Admin" : ""}
+              </div>
+            </div>
+          </div>
+
+          <form onSubmit={changePassword}>
+            <label style={lbl}>Change Password</label>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input type="password" autoComplete="new-password" placeholder="New password (min 8 chars)" value={newPw} onChange={(e) => setNewPw(e.target.value)} style={field} />
+              <button type="submit" disabled={pwBusy} style={{ ...btn(SURFACE2, TEXT), border: `1px solid ${BORDER2}`, whiteSpace: "nowrap", opacity: pwBusy ? 0.7 : 1 }}>{pwBusy ? "Saving…" : "Update"}</button>
+            </div>
+            {pwMsg && <div style={{ marginTop: 8, fontSize: 12.5, fontWeight: 600, color: pwMsg.ok ? "#4ade80" : "#f87171" }}>{pwMsg.t}</div>}
+          </form>
+        </div>
+      </div>
+
+      {/* Admin: create login */}
+      {isAdmin && (
+        <div style={card}>
+          <div style={head}>
+            <h2 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: TEXT_ACCENT }}>Create a Login</h2>
+            <p style={{ margin: "3px 0 0", fontSize: 12, color: TEXT2 }}>Admin only. A temporary password is generated to share with the new member.</p>
+          </div>
+          <div style={body}>
+            <form onSubmit={createUser} style={{ display: "grid", gap: 12 }}>
+              <div>
+                <label style={lbl}>Email</label>
+                <input type="email" required placeholder="name@ladderglobal.com" value={email} onChange={(e) => setEmail(e.target.value)} style={field} />
+              </div>
+              <div>
+                <label style={lbl}>Role (optional)</label>
+                <input placeholder="e.g. Developer" value={role} onChange={(e) => setRole(e.target.value)} style={field} />
+              </div>
+              <button type="submit" disabled={busy} style={{ ...btn(BRAND, TEXT_ACCENT), opacity: busy ? 0.7 : 1 }}>{busy ? "Creating…" : "Create Login"}</button>
+            </form>
+
+            {result?.error && (
+              <div role="alert" style={{ marginTop: 14, fontSize: 13, fontWeight: 600, color: "#f87171" }}>{result.error}</div>
+            )}
+            {result?.password && (
+              <div style={{ marginTop: 14, padding: 14, borderRadius: 10, background: "#22c55e11", border: "1px solid #22c55e44" }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700, color: "#4ade80", marginBottom: 8 }}>Login created — share these with {result.email}:</div>
+                <div style={{ fontSize: 13, color: TEXT, fontFamily: "monospace", lineHeight: 1.8, wordBreak: "break-all" }}>
+                  <div>Email: {result.email}</div>
+                  <div>Temp password: <strong>{result.password}</strong></div>
+                </div>
+                <button onClick={() => navigator.clipboard?.writeText(`Email: ${result.email}\nTemporary password: ${result.password}`)} style={{ ...btn(SURFACE2, TEXT), border: `1px solid ${BORDER2}`, marginTop: 10, fontSize: 12 }}>Copy</button>
+                <div style={{ fontSize: 11.5, color: TEXT3, marginTop: 8 }}>Ask them to change it under Account → Change Password after signing in.</div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── Login ─────────────────────────────────────────────────── */
+function LoginScreen() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setErr("");
+    setBusy(true);
+    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+    setBusy(false);
+    if (error) setErr(error.message);
+    // On success, App's onAuthStateChange picks up the session and renders the app.
+  };
+
+  const field = { width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 8, border: `1.5px solid ${BORDER2}`, background: SURFACE, color: TEXT, fontSize: 14, outline: "none", marginBottom: 14 };
+  const lbl = { display: "block", fontSize: 11, fontWeight: 700, color: TEXT3, marginBottom: 5, textTransform: "uppercase", letterSpacing: 0.5 };
+
+  return (
+    <div style={{ minHeight: "100vh", background: SURFACE, color: TEXT, display: "flex", alignItems: "center", justifyContent: "center", padding: 16, fontFamily: "'Geist Sans', 'SF Pro Display', 'Helvetica Neue', sans-serif" }}>
+      <form onSubmit={submit} data-testid="login-form" style={{ width: "100%", maxWidth: 380, background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 16, padding: 28, boxShadow: "0 30px 80px rgba(0,0,0,0.6)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+          <div style={{ width: 3, height: 22, background: BRAND, borderRadius: 4 }} />
+          <h1 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: TEXT }}>Project Tracker</h1>
+        </div>
+        <p style={{ margin: "0 0 24px", fontSize: 13, color: TEXT3 }}>Sign in to continue · Ladder Global</p>
+
+        <label style={lbl}>Email</label>
+        <input data-testid="login-email" type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} style={field} />
+
+        <label style={lbl}>Password</label>
+        <input data-testid="login-password" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} style={field} />
+
+        {err && <div role="alert" style={{ color: "#f87171", fontSize: 12.5, fontWeight: 600, marginBottom: 14 }}>{err}</div>}
+
+        <button type="submit" disabled={busy} style={{ width: "100%", padding: "11px 0", borderRadius: 8, border: "none", background: BRAND, color: TEXT_ACCENT, fontWeight: 800, fontSize: 14, cursor: busy ? "default" : "pointer", opacity: busy ? 0.7 : 1 }}>
+          {busy ? "Signing in…" : "Sign In"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 /* ─── Main App ──────────────────────────────────────────────── */
 export default function App() {
   const { isMobile, isTablet } = useBreakpoint();
@@ -1006,7 +1240,6 @@ export default function App() {
     }
   });
   const [tab, setTab] = useState("dashboard");
-  const [timelineProjectId, setTimelineProjectId] = useState(null);
   const [modal, setModal] = useState(null);
   const [delId, setDelId] = useState(null);
   const [search, setSearch] = useState("");
@@ -1015,6 +1248,28 @@ export default function App() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [viewProjectDetails, setViewProjectDetails] = useState(null);
   const [toast, setToast] = useState(null);
+  const [session, setSession] = useState(null);
+  const [authChecked, setAuthChecked] = useState(false);
+
+  /* Auth: track the Supabase session. */
+  useEffect(() => {
+    if (!supabase || AUTH_BYPASS) { setAuthChecked(true); return; }
+    let active = true;
+    supabase.auth.getSession().then(({ data }) => {
+      if (active) { setSession(data.session); setAuthChecked(true); }
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => { active = false; subscription.unsubscribe(); };
+  }, []);
+
+  const authed = AUTH_BYPASS || !supabase || !!session;
+  const signOut = () => supabase && supabase.auth.signOut();
+
+  // UI-only admin gate from VITE_ADMIN_EMAILS (the server re-checks ADMIN_EMAILS
+  // before creating users). No hardcoded email — set the env var in .env.local / Vercel.
+  const ADMIN_LIST = (import.meta.env.VITE_ADMIN_EMAILS || "")
+    .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+  const isAdmin = !!session && ADMIN_LIST.includes((session?.user?.email || "").toLowerCase());
 
   const [expandedProjectTasks, setExpandedProjectTasks] = useState(new Set());
   const toggleProjectTaskExpand = (id) => setExpandedProjectTasks(s => {
@@ -1033,8 +1288,10 @@ export default function App() {
   /* Persist team to localStorage */
   useEffect(() => { localStorage.setItem("ladder_team", JSON.stringify(team)); }, [team]);
 
-  /* Load projects from Supabase (or localStorage fallback) */
+  /* Load projects from Supabase (or localStorage fallback). Waits until the
+     user is authenticated, otherwise RLS rejects every query. */
   useEffect(() => {
+    if (!authChecked || !authed) return;
     const loadFromLocal = () => {
       try {
         const saved = JSON.parse(localStorage.getItem("ladder_projects"));
@@ -1075,30 +1332,66 @@ export default function App() {
       setLoading(false);
     };
     load();
-  }, []);
+  }, [authChecked, authed]);
 
   /* Persist projects to localStorage whenever they change */
   useEffect(() => {
     if (!loading) localStorage.setItem("ladder_projects", JSON.stringify(projects));
   }, [projects, loading]);
 
-  /* Google Sheets sync */
+  /* Google Sheets sync — shapes the payload to match the Apps Script worker:
+     - projects[]: one row per project for the tracker tab (4 stages + progress).
+     - tree[]: per-project hierarchy (mains → sub-tasks) for the grouped,
+       collapsible Timeline + Gantt tabs. */
   const syncSheets = useCallback(async (ps) => {
     try {
-      const payload = {
-        projects: ps.map((p) => ({ ...p, progress: taskPct(p.tasks || p.stages || []) })),
-      };
+      const node = (t) => ({
+        name: t.name || "",
+        assignee: t.assignee || "",
+        startDate: t.startDate || "",
+        endDate: t.endDate || "",
+        durationDays: durDays(t.startDate, t.endDate),
+        status: t.status || "",
+        notes: t.notes || "",
+      });
+
+      const projects = ps.map((p) => ({
+        projectName: p.projectName,
+        clientName: p.clientName,
+        website: p.website || "",
+        status: p.status,
+        progress: taskPct(p.tasks || p.stages || []),
+        stages: mainsOf(p).map((t) => ({ status: t.status, assignee: t.assignee || "" })),
+      }));
+
+      const tree = ps.map((p) => ({
+        project: p.projectName,
+        client: p.clientName,
+        status: p.status,
+        progress: taskPct(p.tasks || p.stages || []),
+        mains: mainsOf(p).map((m) => ({ ...node(m), subs: subsOf(p, m).map(node) })),
+      }));
+
       const res = await fetch("/api/sync-sheets", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ projects, tree }),
       });
       const data = await res.json();
       setSyncStatus({ ok: data.ok, msg: data.error || "" });
     } catch (e) { setSyncStatus({ ok: false, msg: e.message }); }
   }, []);
 
-  const onTestSync = () => syncSheets(projects);
+  /* Initial backfill: once projects have loaded, mirror the current list to
+     Google Sheets exactly once. Without this, the sheet only reflects projects
+     that are added/edited/deleted after load — existing projects would never
+     appear. Runs after `loading` flips false so it sees the loaded data. */
+  const didInitialSync = useRef(false);
+  useEffect(() => {
+    if (loading || didInitialSync.current) return;
+    didInitialSync.current = true;
+    syncSheets(projects);
+  }, [loading, projects, syncSheets]);
 
   /* Save project — optimistic local update first, then background cloud sync.
      We never block the UI on the Supabase round-trip (a failed request can take
@@ -1112,13 +1405,11 @@ export default function App() {
       const isNew = !form.id || !projects.some((p) => p.id === form.id);
       const finalProj = { ...form, id: form.id || crypto.randomUUID(), createdAt: form.createdAt || new Date().toISOString() };
 
-      if (isNew) {
-        setProjects((curr) => [...curr, finalProj]);
-        showToast(i18n.t("Project created successfully!"));
-      } else {
-        setProjects((curr) => curr.map((x) => (x.id === finalProj.id ? finalProj : x)));
-        showToast(i18n.t("Project updated successfully!"));
-      }
+      const next = isNew
+        ? [...projects, finalProj]
+        : projects.map((x) => (x.id === finalProj.id ? finalProj : x));
+      setProjects(next);
+      showToast(isNew ? i18n.t("Project created successfully!") : i18n.t("Project updated successfully!"));
       setModal(null);
 
       // Background cloud sync — don't await; warn (non-blocking) on failure
@@ -1134,29 +1425,9 @@ export default function App() {
         });
       }
 
-      // Sync Sheets
-      if (typeof sheetsCfg !== 'undefined' && sheetsCfg.url) {
-        const headers = ["Task ID", "Parent ID", "Type", "Order", "Name", "Assignee", "Start Date", "End Date", "Status", "Notes"];
-        const aoa = [headers];
-        const sorted = [...(finalProj.tasks || [])].sort((a,b) => a.order - b.order);
-        for (const t of sorted) {
-          aoa.push([t.task_id, t.parent_id || "", t.row_type, t.order, t.name, t.assignee, t.startDate, t.endDate, t.status, t.notes]);
-        }
-        const payload = {
-          action: "update_project",
-          project: {
-            id: finalProj.id,
-            name: finalProj.projectName,
-            client: finalProj.clientName,
-            aoa
-          }
-        };
-        fetch("/api/sync-sheets", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
-        }).catch(err => console.error("Sync error", err));
-      }
+      // Background Google Sheets sync — mirrors the full project list to the
+      // Tracker / Gantt / Timeline tabs. Non-blocking.
+      syncSheets(next);
     } catch (e) {
       showToast(i18n.t("Error saving project"), "error");
     }
@@ -1164,7 +1435,8 @@ export default function App() {
 
   const deleteProject = (id) => {
     try {
-      setProjects((curr) => curr.filter((x) => x.id !== id));
+      const next = projects.filter((x) => x.id !== id);
+      setProjects(next);
       setDelId(null);
       showToast(i18n.t("Project deleted successfully!"));
       // Background cloud sync — non-blocking
@@ -1173,6 +1445,7 @@ export default function App() {
           if (error) console.error("Supabase delete failed (removed locally):", error);
         });
       }
+      syncSheets(next);
     } catch (e) {
       showToast(i18n.t("Error deleting project"), "error");
     }
@@ -1181,7 +1454,8 @@ export default function App() {
   /* Toggle project active — optimistic local update, background cloud sync */
   const toggleProjectActive = (id, isActive) => {
     try {
-      setProjects((curr) => curr.map((p) => p.id === id ? { ...p, isActive } : p));
+      const next = projects.map((p) => p.id === id ? { ...p, isActive } : p);
+      setProjects(next);
       showToast(isActive ? i18n.t("Project set to Active") : i18n.t("Project set to Inactive"));
       if (supabase) {
         supabase.from("projects").update({ is_active: isActive }).eq("id", id).then(({ error }) => {
@@ -1191,47 +1465,134 @@ export default function App() {
           }
         });
       }
+      syncSheets(next);
     } catch (e) {
       showToast(i18n.t("Error updating project status"), "error");
     }
   };
 
 
-  /* Export helpers */
-  const buildExportRows = () => {
-    const hdr = ["Project", "Client", "Website", "Status", "Progress %",
-      "Questionnaire Status", "Q Assignee", "Q Start", "Q End",
-      "Kickoff Status", "KM Assignee", "KM Start", "KM End",
-      "UI/UX Status", "UI Assignee", "UI Start", "UI End",
-      "Dev Status", "Dev Assignee", "Dev Start", "Dev End", "Notes (Latest)"];
-    const rows = projects.map((p) => {
-      const s = p.tasks;
-      const latestNote = [...s].reverse().find((x) => x.notes)?.notes || "";
-      return [p.projectName, p.clientName, p.website, p.status, taskPct(p.tasks) + "%",
-        s[0].status, s[0].assignee, s[0].startDate, s[0].endDate,
-        s[1].status, s[1].assignee, s[1].startDate, s[1].endDate,
-        s[2].status, s[2].assignee, s[2].startDate, s[2].endDate,
-        s[3].status, s[3].assignee, s[3].startDate, s[3].endDate, latestNote];
+  /* Export helpers — hierarchical rows (project → stages → sub-tasks), mirroring
+     the grouped Google Sheets layout. `levels` drives Excel's collapsible outline;
+     the indentation in column A gives the hierarchy in CSV (which has no grouping). */
+  const buildTreeRows = (list = projects) => {
+    const header = ["Project / Stage / Task", "Assignee", "Start", "End", "Duration (Days)", "Status", "Notes"];
+    const rows = [header];
+    const levels = [0];      // outline level per row (0 = none)
+    const kinds = ["header"]; // header | project | main | sub
+    list.forEach((p) => {
+      rows.push([`${p.projectName}   ·   ${taskPct(p.tasks || [])}%`, "", "", "", "", p.status || "", ""]);
+      levels.push(0); kinds.push("project");
+      mainsOf(p).forEach((m) => {
+        rows.push([`    ${m.name}`, m.assignee || "", m.startDate || "", m.endDate || "", durDays(m.startDate, m.endDate), m.status || "", m.notes || ""]);
+        levels.push(1); kinds.push("main");
+        subsOf(p, m).forEach((s) => {
+          rows.push([`        ↳ ${s.name}`, s.assignee || "", s.startDate || "", s.endDate || "", durDays(s.startDate, s.endDate), s.status || "", s.notes || ""]);
+          levels.push(2); kinds.push("sub");
+        });
+      });
     });
-    return [hdr, ...rows];
+    return { rows, levels, kinds };
   };
 
-  const exportCSV = () => {
-    const rows = buildExportRows();
-    const csv = rows.map((r) => r.map((c) => `"${(c || "").replace(/"/g, '""')}"`).join(",")).join("\n");
+  const triggerDownload = (blob, filename) => {
     const a = document.createElement("a");
-    a.href = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
-    a.download = "ladder_projects.csv";
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
     a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
   };
 
-  const exportXLSX = () => {
-    const rows = buildExportRows();
+  const exportCSV = (list = projects, name = "ladder_projects") => {
+    const { rows } = buildTreeRows(list);
+    const csv = rows.map((r) => r.map((c) => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
+    triggerDownload(new Blob([csv], { type: "text/csv;charset=utf-8;" }), `${name}.csv`);
+  };
+
+  const exportXLSX = (list = projects, name = "ladder_projects") => {
+    const { rows, levels, kinds } = buildTreeRows(list);
     const ws = XLSX.utils.aoa_to_sheet(rows);
-    ws["!cols"] = [18, 16, 18, 14, 10, 14, 12, 10, 10, 14, 12, 10, 10, 12, 12, 10, 10, 12, 12, 10, 10, 30].map((w) => ({ wch: w }));
+    ws["!cols"] = [{ wch: 42 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 32 }];
+    // Excel outline levels → collapsible groups (project ▸ stages ▸ sub-tasks)
+    ws["!rows"] = levels.map((lv) => (lv > 0 ? { level: lv } : {}));
+    const W = rows[0].length;
+    rows.forEach((_, r) => {
+      const style = r === 0 || kinds[r] === "project"
+        ? { fill: { patternType: "solid", fgColor: { rgb: "1E3A5F" } }, font: { bold: true, color: { rgb: "FFFFFF" } } }
+        : kinds[r] === "main" ? { font: { bold: true } } : null;
+      if (!style) return;
+      for (let c = 0; c < W; c++) {
+        const ref = XLSX.utils.encode_cell({ r, c });
+        if (!ws[ref]) ws[ref] = { t: "s", v: "" };
+        ws[ref].s = style;
+      }
+    });
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Project Tracker");
-    XLSX.writeFile(wb, "ladder_projects.xlsx");
+    XLSX.utils.book_append_sheet(wb, ws, "Projects");
+    const out = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    triggerDownload(new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), `${name}.xlsx`);
+  };
+
+  // Colored Gantt chart as XLSX — grouped by project (project once, collapsible
+  // outline), one column per day, stage bars colour-coded.
+  const exportGanttXLSX = (list = projects, name = "ladder_gantt") => {
+    const STAGE_FILL = { "Questionnaire": "FF5050", "Kickoff Meeting": "3B82F6", "UI/UX Design": "8B5CF6", "Development": "22C55E" };
+    const day = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
+
+    const times = [];
+    list.forEach((p) => (p.tasks || []).forEach((t) => { if (t.startDate && t.endDate) times.push(day(t.startDate).getTime(), day(t.endDate).getTime()); }));
+    if (!times.length) { showToast(i18n.t("No dated stages to chart."), "error"); return; }
+
+    const minD = day(Math.min(...times));
+    const totalDays = Math.min(dayDiff(minD, day(Math.max(...times))) + 1, 366);
+    const LABELS = ["Project / Stage / Task", "Assignee", "Status"];
+    const W = LABELS.length + totalDays;
+    const off = (d) => dayDiff(minD, day(d));
+
+    // Build the row plan: project header → mains → sub-tasks, with outline levels.
+    const plan = [];
+    list.forEach((p) => {
+      plan.push({ level: 0, kind: "project", label: `${p.projectName}   ·   ${taskPct(p.tasks || [])}%`, c2: "", c3: p.status || "" });
+      mainsOf(p).forEach((m) => {
+        plan.push({ level: 1, kind: "main", label: `    ${m.name}`, c2: m.assignee || "", c3: m.status || "", bar: m.startDate && m.endDate ? { s: off(m.startDate), e: off(m.endDate), color: STAGE_FILL[m.name] || "60A5FA" } : null });
+        subsOf(p, m).forEach((s) => plan.push({ level: 2, kind: "sub", label: `        ↳ ${s.name}`, c2: s.assignee || "", c3: s.status || "", bar: s.startDate && s.endDate ? { s: off(s.startDate), e: off(s.endDate), color: "93C5FD" } : null }));
+      });
+    });
+
+    const ws = {};
+    const set = (r, c, v, s) => { ws[XLSX.utils.encode_cell({ r, c })] = { t: "s", v: v == null ? "" : String(v), ...(s ? { s } : {}) }; };
+    const hdrStyle = { fill: { patternType: "solid", fgColor: { rgb: "1E3A5F" } }, font: { bold: true, color: { rgb: "FFFFFF" } } };
+
+    // header row
+    LABELS.forEach((l, c) => set(0, c, l, hdrStyle));
+    for (let i = 0; i < totalDays; i++) { const d = addDays(minD, i); set(0, LABELS.length + i, `${d.getDate()}/${d.getMonth() + 1}`, hdrStyle); }
+
+    plan.forEach((row, i) => {
+      const r = i + 1;
+      const projStyle = row.kind === "project" ? hdrStyle : null;
+      set(r, 0, row.label, projStyle || (row.kind === "main" ? { font: { bold: true } } : null));
+      set(r, 1, row.c2, projStyle);
+      set(r, 2, row.c3, projStyle);
+      if (row.kind === "project") for (let c = 0; c < totalDays; c++) set(r, LABELS.length + c, "", hdrStyle);
+      if (row.bar) {
+        const s = Math.max(row.bar.s, 0), e = Math.min(row.bar.e, totalDays - 1);
+        for (let c = s; c <= e; c++) if (c >= 0 && c < totalDays) set(r, LABELS.length + c, "", { fill: { patternType: "solid", fgColor: { rgb: row.bar.color } } });
+      }
+    });
+
+    // today marker
+    const tOff = dayDiff(minD, day(new Date()));
+    if (tOff >= 0 && tOff < totalDays) set(0, LABELS.length + tOff, `${addDays(minD, tOff).getDate()}/${addDays(minD, tOff).getMonth() + 1}`, { fill: { patternType: "solid", fgColor: { rgb: "FF5050" } }, font: { bold: true, color: { rgb: "FFFFFF" } } });
+
+    ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: plan.length, c: W - 1 } });
+    ws["!cols"] = [{ wch: 34 }, { wch: 12 }, { wch: 12 }, ...Array(totalDays).fill({ wch: 3.2 })];
+    ws["!rows"] = [{}, ...plan.map((row) => (row.level > 0 ? { level: row.level } : {}))];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Gantt");
+    const out = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    triggerDownload(new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), `${name}.xlsx`);
   };
 
   const stats = useMemo(() => ({
@@ -1247,7 +1608,7 @@ export default function App() {
     return (!q || p.projectName.toLowerCase().includes(q) || p.clientName.toLowerCase().includes(q)) && (fStatus === "All" || p.status === fStatus);
   }), [projects, search, fStatus]);
 
-  const TABS = [["dashboard", "Dashboard"], ["projects", "Projects"], ["timeline", "Timeline"], ["team", "Team"], ["sheets", "Sheets"]];
+  const TABS = [["dashboard", "Dashboard"], ["projects", "Projects"], ["timeline", "Timeline"], ["team", "Team"], ["sheets", "Sheets"], ["account", "Account"]];
   const CARDS = [
     { l: "Total", v: stats.total, c: BRAND, bg: BRAND_DIM },
     { l: "In Progress", v: stats.inProgress, c: "#2563eb", bg: "#3b82f611" },
@@ -1258,6 +1619,14 @@ export default function App() {
 
   const headerPad = isMobile ? "0 16px" : "0 28px";
   const contentPad = isMobile ? "16px" : isTablet ? "20px 24px" : "24px 28px";
+
+  // Auth gate — checked after all hooks have run.
+  if (!authChecked) {
+    return <div style={{ minHeight: "100vh", background: SURFACE, color: TEXT3, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>Loading…</div>;
+  }
+  if (supabase && !AUTH_BYPASS && !session) {
+    return <LoginScreen />;
+  }
 
   return (
     <div style={{ fontFamily: "'Geist Sans', 'SF Pro Display', 'Helvetica Neue', sans-serif", minHeight: "100vh", background: SURFACE, color: TEXT }}>
@@ -1278,12 +1647,12 @@ export default function App() {
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               {!isMobile && (
-                <>
-                  <button onClick={exportCSV} style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #ffffff33", background: "transparent", cursor: "pointer", fontWeight: 600, fontSize: 12, color: TEXT_ACCENT }}>CSV</button>
-                  <button onClick={exportXLSX} style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #3ECF8E55", background: "#3ECF8E22", cursor: "pointer", fontWeight: 600, fontSize: 12, color: "#3ECF8E" }}>XLSX</button>
-                </>
+                <DownloadMenu projects={projects} onCSV={exportCSV} onXLSX={exportXLSX} onGantt={exportGanttXLSX} />
               )}
               <button data-testid="btn-new" onClick={() => setModal(mkProject())} style={{ padding: isMobile ? "7px 14px" : "7px 16px", borderRadius: 8, border: "none", background: BRAND, color: TEXT_ACCENT, cursor: "pointer", fontWeight: 800, fontSize: isMobile ? 12 : 13 }}>+ New</button>
+              {!isMobile && supabase && !AUTH_BYPASS && session && (
+                <button onClick={signOut} style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #ffffff33", background: "transparent", cursor: "pointer", fontWeight: 600, fontSize: 12, color: TEXT_ACCENT }}>Sign Out</button>
+              )}
               {isMobile && (
                 <button onClick={() => setMobileMenuOpen((o) => !o)} style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid #ffffff33", background: "transparent", cursor: "pointer", color: TEXT_ACCENT, fontSize: 16, lineHeight: 1 }}>⋮</button>
               )}
@@ -1292,9 +1661,13 @@ export default function App() {
 
           {/* Mobile export menu */}
           {isMobile && mobileMenuOpen && (
-            <div style={{ paddingBottom: 12, display: "flex", gap: 8 }}>
-              <button onClick={() => { exportCSV(); setMobileMenuOpen(false); }} style={{ flex: 1, padding: "8px", borderRadius: 8, border: "1px solid #ffffff33", background: "transparent", cursor: "pointer", fontWeight: 600, fontSize: 12, color: TEXT_ACCENT }}>Export CSV</button>
-              <button onClick={() => { exportXLSX(); setMobileMenuOpen(false); }} style={{ flex: 1, padding: "8px", borderRadius: 8, border: "1px solid #3ECF8E55", background: "#3ECF8E22", cursor: "pointer", fontWeight: 600, fontSize: 12, color: "#3ECF8E" }}>Export XLSX</button>
+            <div style={{ paddingBottom: 12, display: "flex", gap: 8, alignItems: "flex-start" }}>
+              <div style={{ flex: 1 }}>
+                <DownloadMenu projects={projects} onCSV={exportCSV} onXLSX={exportXLSX} onGantt={exportGanttXLSX} isMobile />
+              </div>
+              {supabase && !AUTH_BYPASS && session && (
+                <button onClick={() => { signOut(); setMobileMenuOpen(false); }} style={{ flex: 1, padding: "8px", borderRadius: 8, border: "1px solid #ffffff33", background: "transparent", cursor: "pointer", fontWeight: 600, fontSize: 12, color: TEXT_ACCENT }}>Sign Out</button>
+              )}
             </div>
           )}
 
@@ -1466,9 +1839,10 @@ export default function App() {
             })}
         </>}
 
-                {!loading && tab === "timeline" && <TimelineTab projects={projects} initialFocusId={timelineProjectId} />}
+                {!loading && tab === "timeline" && <TimelineTab projects={projects} initialFocusId={null} />}
         {!loading && tab === "team" && <TeamTab team={team} setTeam={setTeam} projects={projects} />}
-        {!loading && tab === "sheets" && <SheetsTab onTestSync={onTestSync} syncStatus={syncStatus} />}
+        {!loading && tab === "sheets" && <SheetsTab syncStatus={syncStatus} />}
+        {!loading && tab === "account" && <AccountTab session={session} isAdmin={isAdmin} />}
       </div>
 
       {/* ── Project Modal ── */}
