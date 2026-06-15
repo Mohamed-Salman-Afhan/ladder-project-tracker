@@ -14,7 +14,10 @@
 // row, with its stages nested under it and sub-tasks nested one level deeper
 // (native Google Sheets collapsible row groups).
 
-const SECRET = "lg-web-project-tracker-2026";
+// Secret is read from a Script Property (Apps Script editor → Project Settings →
+// Script properties → add SYNC_SECRET). Never hardcode it here — this file is in
+// a public repo. Must match GOOGLE_SHEETS_SECRET in the app's server env.
+const SECRET = PropertiesService.getScriptProperties().getProperty("SYNC_SECRET");
 const SPREADSHEET_ID = "1bgvc5kE8ELx_xg9APYfsHIY1_9bh7zl34lPJ-K-uQvM";
 const PROJECTS_SHEET = "Website-Project-Tracker";
 const TIMELINE_SHEET = "Timeline";

@@ -5,7 +5,7 @@ import { createClient } from "@supabase/supabase-js";
 import crypto from "node:crypto";
 
 const adminEmails = () =>
-  (process.env.ADMIN_EMAILS || "salman@ladderglobal.com")
+  (process.env.ADMIN_EMAILS || "")
     .split(",")
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);

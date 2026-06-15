@@ -37,10 +37,6 @@ const INIT_TEAM = [
   { id: "3", name: "Salman", role: "Developer", is_active: true },
   { id: "4", name: "Janith", role: "Designer", is_active: true }
 ];
-const SHEETS_DEFAULTS = {
-  url: "https://script.google.com/macros/s/AKfycbzuPa5HwBMz84G4WbOudvA0Yw0R9zKIiziRRz2LDS-KQZVB7-FTJGYbBFd331ZNVI98HA/exec",
-  secret: "lg-web-project-tracker-2026",
-};
 const SHEET_VIEW_URL = "https://docs.google.com/spreadsheets/d/1bgvc5kE8ELx_xg9APYfsHIY1_9bh7zl34lPJ-K-uQvM/edit";
 
 const addDays = (date, days) => {
@@ -1269,10 +1265,11 @@ export default function App() {
   const authed = AUTH_BYPASS || !supabase || !!session;
   const signOut = () => supabase && supabase.auth.signOut();
 
-  // UI-only admin gate (the server re-checks ADMIN_EMAILS before creating users).
-  const ADMIN_LIST = (import.meta.env.VITE_ADMIN_EMAILS || "salman@ladderglobal.com")
-    .split(",").map((s) => s.trim().toLowerCase());
-  const isAdmin = !!session && ADMIN_LIST.includes((session.user.email || "").toLowerCase());
+  // UI-only admin gate from VITE_ADMIN_EMAILS (the server re-checks ADMIN_EMAILS
+  // before creating users). No hardcoded email — set the env var in .env.local / Vercel.
+  const ADMIN_LIST = (import.meta.env.VITE_ADMIN_EMAILS || "")
+    .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+  const isAdmin = !!session && ADMIN_LIST.includes((session?.user?.email || "").toLowerCase());
 
   const [expandedProjectTasks, setExpandedProjectTasks] = useState(new Set());
   const toggleProjectTaskExpand = (id) => setExpandedProjectTasks(s => {
