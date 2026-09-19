@@ -5,7 +5,9 @@
 // Payload from the app (src/App.jsx → syncSheets):
 //   { secret,
 //     projects: [ { projectName, clientName, website, status, progress,
-//                   stages:[{status,assignee}] } ],            // tracker tab
+//                   stages:[{status,assignee}],
+//                   phase, health, healthReasons, platform, owner, nextAction,
+//                   nextActionDue, nextRenewal, carePlan, securityScore } ],  // tracker tab
 //     tree: [ { project, client, status, progress,
 //               mains:[ { name, assignee, startDate, endDate, durationDays,
 //                         status, notes, subs:[ {…same…} ] } ] } ] }  // Timeline + Gantt
@@ -95,6 +97,8 @@ function buildProjects(ss, projects) {
     "Project", "Client", "Website", "Status", "Progress %",
     "Questionnaire", "Q Assignee", "Kickoff Meeting", "KM Assignee",
     "UI/UX Design", "UI Assignee", "Development", "Dev Assignee", "Last Updated",
+    "Phase", "Health", "Health Reasons", "Platform", "Owner", "Next Action", "Due",
+    "Next Renewal", "Care Plan", "Security Score",
   ];
   sh.clear();
   const now = new Date().toLocaleString();
@@ -108,6 +112,8 @@ function buildProjects(ss, projects) {
       s[2] && s[2].status || "", s[2] && s[2].assignee || "",
       s[3] && s[3].status || "", s[3] && s[3].assignee || "",
       now,
+      p.phase || "", p.health || "", p.healthReasons || "", p.platform || "", p.owner || "",
+      p.nextAction || "", p.nextActionDue || "", p.nextRenewal || "", p.carePlan || "", p.securityScore || "",
     ]);
   });
   sh.getRange(1, 1, rows.length, header.length).setValues(rows);
