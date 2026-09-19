@@ -1,7 +1,9 @@
 import { useState, useMemo, useCallback, useEffect, useRef, Fragment } from "react";
 import * as XLSX from "xlsx-js-style";
-import { supabase, toDb, fromDb } from "./lib/supabase";
+import { supabase, toDb, fromDb, isMissingLifecycleColumn, withoutLifecycle } from "./lib/supabase";
 import i18n from "./i18n";
+import { mkLifecycle } from "./lib/lifecycle";
+import { LifecycleEditor, HealthBadge, PhaseBadge, AttentionPanel, RenewalsPanel, lifecycleSummary } from "./Lifecycle";
 
 
 /* ─── Constants ─────────────────────────────────────────────── */
@@ -72,6 +74,7 @@ const mkProject = () => ({
   website: "",
   status: "Not Started",
   tasks: STAGES.map((s, i) => mkTask(s, "main", null, i + 1)),
+  lifecycle: mkLifecycle(),
 });
 
 // Progress counts only ACTIVE tasks — inactive main tasks (and the subtasks
@@ -457,7 +460,9 @@ function ProjectModal({ project, team, onSave, onClose }) {
                 ))}
               </select>
             </div>
-            
+
+            <LifecycleEditor value={form.lifecycle} onChange={(v) => set("lifecycle", v)} team={team} isMobile={isMobile} />
+
             <div style={{ display: "grid", gap: 14, gridColumn: isMobile ? "span 1" : "span 2" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <h3 style={{ margin: 0, fontSize: 14, color: TEXT }}>{i18n.t("Tasks")}</h3>
@@ -1444,6 +1449,7 @@ export default function App() {
         status: p.status,
         progress: taskPct(p.tasks || p.stages || []),
         stages: mainsOf(p).map((t) => ({ status: t.status, assignee: t.assignee || "" })),
+        ...lifecycleSummary(p),
       }));
 
       const tree = ps.map((p) => ({
@@ -1496,10 +1502,18 @@ export default function App() {
 
       // Background cloud sync — don't await; warn (non-blocking) on failure
       if (supabase) {
-        const op = isNew
-          ? supabase.from("projects").insert(toDb(finalProj))
-          : supabase.from("projects").update(toDb(finalProj)).eq("id", finalProj.id);
-        op.then(({ error }) => {
+        const write = (row) => isNew
+          ? supabase.from("projects").insert(row)
+          : supabase.from("projects").update(row).eq("id", finalProj.id);
+        write(toDb(finalProj)).then(async (res) => {
+          // Lifecycle column not migrated yet → save everything else, keep
+          // lifecycle in local storage, and say so once.
+          if (isMissingLifecycleColumn(res.error)) {
+            console.warn("`lifecycle` column missing — run the 20260919 migration. Saving without it.");
+            res = await write(withoutLifecycle(toDb(finalProj)));
+          }
+          return res;
+        }).then(({ error }) => {
           if (error) {
             console.error("Supabase write failed (saved to local storage):", error);
             showToast(i18n.t("Cloud sync failed — saved locally"), "error");
@@ -1795,6 +1809,8 @@ export default function App() {
               </div>
             ))}
           </div>
+          <AttentionPanel projects={projects} onOpen={(p) => setModal({ ...p })} />
+          <RenewalsPanel projects={projects} />
           <div style={{ background: SURFACE, border: `1px solid ${BORDER}`, borderRadius: 14, padding: "20px 22px", boxShadow: "none" }}>
             <h2 style={{ margin: "0 0 16px", fontSize: 15, fontWeight: 800, color: TEXT_ACCENT }}>Project Progress</h2>
             {projects.length === 0 && <div style={{ color: TEXT3, textAlign: "center", padding: "32px 0" }}>No projects yet.</div>}
@@ -1808,7 +1824,9 @@ export default function App() {
                       <div style={{ fontWeight: 700, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.projectName}</div>
                       <div style={{ fontSize: 12, color: TEXT3 }}>{p.clientName}</div>
                     </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      {!isMobile && <PhaseBadge project={p} small />}
+                      <HealthBadge project={p} small />
                       <Badge status={p.status} small />
                       <span style={{ fontSize: 13, fontWeight: 800, color: BRAND }}>{pct}%</span>
                     </div>
@@ -1855,6 +1873,8 @@ export default function App() {
                         </div>
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <PhaseBadge project={p} />
+                        <HealthBadge project={p} />
                         <Badge status={p.status} />
                         <span style={{ fontSize: 13, color: BRAND, fontWeight: 800 }}>{pct}%</span>
                         <button onClick={() => setViewProjectDetails(p)} style={{ padding: "5px 12px", borderRadius: 7, border: `1.5px solid ${BRAND}33`, background: SURFACE, cursor: "pointer", fontWeight: 700, fontSize: 12, color: TEXT }}>View</button>

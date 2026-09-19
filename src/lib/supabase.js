@@ -16,6 +16,7 @@ export const toDb = (p) => ({
   status: p.status,
   stages: p.tasks,
   is_active: p.isActive !== false,
+  lifecycle: p.lifecycle || {},
 });
 
 export const fromDb = (r) => ({
@@ -32,4 +33,15 @@ export const fromDb = (r) => ({
     assignee: t.assignee ? t.assignee.replace(" LG", "").trim() : "",
   })),
   isActive: r.is_active !== false,
+  lifecycle: r.lifecycle || {},
 });
+
+// True when a write failed only because the `lifecycle` column isn't in the
+// database yet (migration not applied). Callers retry without it.
+export const isMissingLifecycleColumn = (error) =>
+  !!error && /lifecycle/i.test(`${error.message || ""} ${error.details || ""}`);
+
+export const withoutLifecycle = (row) => {
+  const { lifecycle, ...rest } = row; // eslint-disable-line no-unused-vars
+  return rest;
+};
