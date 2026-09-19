@@ -1183,19 +1183,35 @@ function AccountTab({ session, isAdmin }) {
 
 /* ─── Login ─────────────────────────────────────────────────── */
 function LoginScreen() {
+  const [mode, setMode] = useState("login"); // "login" | "forgot"
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
+  const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
 
   const submit = async (e) => {
     e.preventDefault();
     setErr("");
+    setMsg("");
     setBusy(true);
-    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+
+    if (mode === "login") {
+      const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+      if (error) {
+        setErr(error.message === "Failed to fetch" ? "Network error: Could not reach Supabase. Please check your VITE_SUPABASE_URL in .env.local." : error.message);
+      }
+    } else {
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+        redirectTo: window.location.origin,
+      });
+      if (error) {
+        setErr(error.message === "Failed to fetch" ? "Network error: Could not reach Supabase. Please check your VITE_SUPABASE_URL in .env.local." : error.message);
+      } else {
+        setMsg("Password reset link sent! Check your email.");
+      }
+    }
     setBusy(false);
-    if (error) setErr(error.message);
-    // On success, App's onAuthStateChange picks up the session and renders the app.
   };
 
   const field = { width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 8, border: `1.5px solid ${BORDER2}`, background: SURFACE, color: TEXT, fontSize: 14, outline: "none", marginBottom: 14 };
@@ -1208,18 +1224,78 @@ function LoginScreen() {
           <div style={{ width: 3, height: 22, background: BRAND, borderRadius: 4 }} />
           <h1 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: TEXT }}>Project Tracker</h1>
         </div>
-        <p style={{ margin: "0 0 24px", fontSize: 13, color: TEXT3 }}>Sign in to continue · Ladder Global</p>
+        <p style={{ margin: "0 0 24px", fontSize: 13, color: TEXT3 }}>
+          {mode === "login" ? "Sign in to continue · Ladder Global" : "Reset your password"}
+        </p>
 
         <label style={lbl}>Email</label>
         <input data-testid="login-email" type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} style={field} />
 
-        <label style={lbl}>Password</label>
-        <input data-testid="login-password" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} style={field} />
+        {mode === "login" && (
+          <>
+            <label style={lbl}>Password</label>
+            <input data-testid="login-password" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} style={field} />
+          </>
+        )}
+
+        {err && <div role="alert" style={{ color: "#f87171", fontSize: 12.5, fontWeight: 600, marginBottom: 14 }}>{err}</div>}
+        {msg && <div role="alert" style={{ color: "#4ade80", fontSize: 12.5, fontWeight: 600, marginBottom: 14 }}>{msg}</div>}
+
+        <button type="submit" disabled={busy} style={{ width: "100%", padding: "11px 0", borderRadius: 8, border: "none", background: BRAND, color: TEXT_ACCENT, fontWeight: 800, fontSize: 14, cursor: busy ? "default" : "pointer", opacity: busy ? 0.7 : 1 }}>
+          {busy ? "Please wait…" : mode === "login" ? "Sign In" : "Send Reset Link"}
+        </button>
+
+        <div style={{ marginTop: 20, textAlign: "center" }}>
+          {mode === "login" ? (
+            <button type="button" onClick={() => { setMode("forgot"); setErr(""); setMsg(""); }} style={{ background: "transparent", border: "none", color: BRAND, fontSize: 13, fontWeight: 700, cursor: "pointer" }}>Forgot Password?</button>
+          ) : (
+            <button type="button" onClick={() => { setMode("login"); setErr(""); setMsg(""); }} style={{ background: "transparent", border: "none", color: TEXT3, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Back to Login</button>
+          )}
+        </div>
+      </form>
+    </div>
+  );
+}
+
+/* ─── Update Password ───────────────────────────────────────── */
+function UpdatePasswordScreen({ onComplete }) {
+  const [password, setPassword] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (password.length < 8) {
+      setErr("Password must be at least 8 characters.");
+      return;
+    }
+    setErr("");
+    setBusy(true);
+    const { error } = await supabase.auth.updateUser({ password });
+    setBusy(false);
+    if (error) setErr(error.message);
+    else onComplete();
+  };
+
+  const field = { width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 8, border: `1.5px solid ${BORDER2}`, background: SURFACE, color: TEXT, fontSize: 14, outline: "none", marginBottom: 14 };
+  const lbl = { display: "block", fontSize: 11, fontWeight: 700, color: TEXT3, marginBottom: 5, textTransform: "uppercase", letterSpacing: 0.5 };
+
+  return (
+    <div style={{ minHeight: "100vh", background: SURFACE, color: TEXT, display: "flex", alignItems: "center", justifyContent: "center", padding: 16, fontFamily: "'Geist Sans', 'SF Pro Display', 'Helvetica Neue', sans-serif" }}>
+      <form onSubmit={submit} style={{ width: "100%", maxWidth: 380, background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 16, padding: 28, boxShadow: "0 30px 80px rgba(0,0,0,0.6)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+          <div style={{ width: 3, height: 22, background: BRAND, borderRadius: 4 }} />
+          <h1 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: TEXT }}>Project Tracker</h1>
+        </div>
+        <p style={{ margin: "0 0 24px", fontSize: 13, color: TEXT3 }}>Enter your new password</p>
+
+        <label style={lbl}>New Password</label>
+        <input type="password" required value={password} onChange={(e) => setPassword(e.target.value)} style={field} />
 
         {err && <div role="alert" style={{ color: "#f87171", fontSize: 12.5, fontWeight: 600, marginBottom: 14 }}>{err}</div>}
 
         <button type="submit" disabled={busy} style={{ width: "100%", padding: "11px 0", borderRadius: 8, border: "none", background: BRAND, color: TEXT_ACCENT, fontWeight: 800, fontSize: 14, cursor: busy ? "default" : "pointer", opacity: busy ? 0.7 : 1 }}>
-          {busy ? "Signing in…" : "Sign In"}
+          {busy ? "Updating…" : "Update Password"}
         </button>
       </form>
     </div>
@@ -1250,6 +1326,7 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const [session, setSession] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
+  const [recoveryMode, setRecoveryMode] = useState(false);
 
   /* Auth: track the Supabase session. */
   useEffect(() => {
@@ -1258,7 +1335,12 @@ export default function App() {
     supabase.auth.getSession().then(({ data }) => {
       if (active) { setSession(data.session); setAuthChecked(true); }
     });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, s) => {
+      setSession(s);
+      if (event === "PASSWORD_RECOVERY") {
+        setRecoveryMode(true);
+      }
+    });
     return () => { active = false; subscription.unsubscribe(); };
   }, []);
 
@@ -1623,6 +1705,9 @@ export default function App() {
   // Auth gate — checked after all hooks have run.
   if (!authChecked) {
     return <div style={{ minHeight: "100vh", background: SURFACE, color: TEXT3, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>Loading…</div>;
+  }
+  if (recoveryMode) {
+    return <UpdatePasswordScreen onComplete={() => setRecoveryMode(false)} />;
   }
   if (supabase && !AUTH_BYPASS && !session) {
     return <LoginScreen />;
