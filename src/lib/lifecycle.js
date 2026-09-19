@@ -50,6 +50,8 @@ export const HEALTH = {
 export const mkLifecycle = () => ({
   phase: "handover",
   phaseSince: todayISO(),
+  account: "",        // who is billed: "Bear", "Shane Young", "Sprint Integration", "Direct"…
+  retainerHours: "",  // monthly retainer hours, if any
   platform: "",
   hosting: "",
   owner: "",

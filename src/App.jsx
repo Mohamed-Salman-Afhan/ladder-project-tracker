@@ -3,6 +3,8 @@ import * as XLSX from "xlsx-js-style";
 import { supabase, toDb, fromDb, isMissingLifecycleColumn, withoutLifecycle } from "./lib/supabase";
 import i18n from "./i18n";
 import { mkLifecycle } from "./lib/lifecycle";
+import { accountOf } from "./lib/time";
+import HoursTab from "./Hours";
 import { LifecycleEditor, HealthBadge, PhaseBadge, AttentionPanel, RenewalsPanel, lifecycleSummary } from "./Lifecycle";
 
 
@@ -251,7 +253,7 @@ function ProjectViewModal({ project, onClose }) {
 }
 
 /* ─── Project Modal ─────────────────────────────────────────── */
-function ProjectModal({ project, team, onSave, onClose }) {
+function ProjectModal({ project, team, onSave, onClose, accounts = [] }) {
   const { isMobile } = useBreakpoint();
   const [form, setForm] = useState(project);
   const set = (k, v) => setForm((p) => ({ ...p, [k]: v }));
@@ -461,7 +463,7 @@ function ProjectModal({ project, team, onSave, onClose }) {
               </select>
             </div>
 
-            <LifecycleEditor value={form.lifecycle} onChange={(v) => set("lifecycle", v)} team={team} isMobile={isMobile} />
+            <LifecycleEditor value={form.lifecycle} onChange={(v) => set("lifecycle", v)} team={team} isMobile={isMobile} accounts={accounts} />
 
             <div style={{ display: "grid", gap: 14, gridColumn: isMobile ? "span 1" : "span 2" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -1699,12 +1701,14 @@ export default function App() {
     onHold: projects.filter((p) => p.status === "On Hold").length,
   }), [projects]);
 
+  const accountList = useMemo(() => [...new Set(["Direct", ...projects.map(accountOf)])].sort(), [projects]);
+
   const filtered = useMemo(() => projects.filter((p) => {
     const q = search.toLowerCase();
     return (!q || p.projectName.toLowerCase().includes(q) || p.clientName.toLowerCase().includes(q)) && (fStatus === "All" || p.status === fStatus);
   }), [projects, search, fStatus]);
 
-  const TABS = [["dashboard", "Dashboard"], ["projects", "Projects"], ["timeline", "Timeline"], ["team", "Team"], ["sheets", "Sheets"], ["account", "Account"]];
+  const TABS = [["dashboard", "Dashboard"], ["projects", "Projects"], ["hours", "Hours"], ["timeline", "Timeline"], ["team", "Team"], ["sheets", "Sheets"], ["account", "Account"]];
   const CARDS = [
     { l: "Total", v: stats.total, c: BRAND, bg: BRAND_DIM },
     { l: "In Progress", v: stats.inProgress, c: "#2563eb", bg: "#3b82f611" },
@@ -1945,13 +1949,14 @@ export default function App() {
         </>}
 
                 {!loading && tab === "timeline" && <TimelineTab projects={projects} initialFocusId={null} />}
+        {!loading && tab === "hours" && <HoursTab projects={projects} team={team} isMobile={isMobile} showToast={showToast} />}
         {!loading && tab === "team" && <TeamTab team={team} setTeam={setTeam} projects={projects} />}
         {!loading && tab === "sheets" && <SheetsTab syncStatus={syncStatus} />}
         {!loading && tab === "account" && <AccountTab session={session} isAdmin={isAdmin} />}
       </div>
 
       {/* ── Project Modal ── */}
-      {modal && <ProjectModal project={modal} team={team} onSave={saveProject} onClose={() => setModal(null)} />}
+      {modal && <ProjectModal project={modal} team={team} accounts={accountList} onSave={saveProject} onClose={() => setModal(null)} />}
       
       {/* ── Project View Details Modal ── */}
       {viewProjectDetails && <ProjectViewModal project={viewProjectDetails} onClose={() => setViewProjectDetails(null)} />}

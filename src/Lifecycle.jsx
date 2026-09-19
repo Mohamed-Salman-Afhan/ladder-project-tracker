@@ -52,7 +52,7 @@ const lbl = { display: "block", fontSize: 11, fontWeight: 700, color: TEXT3, mar
 
 /* Editor rendered inside the Project modal. `value` is the lifecycle object,
    `onChange` receives the full updated object. */
-export function LifecycleEditor({ value, onChange, team = [], isMobile }) {
+export function LifecycleEditor({ value, onChange, team = [], isMobile, accounts = [] }) {
   const lc = normalizeLifecycle(value);
   const set = (k, v) => onChange({ ...lc, [k]: v });
   const setSec = (k, v) => onChange({ ...lc, security: { ...lc.security, [k]: v } });
@@ -108,6 +108,15 @@ export function LifecycleEditor({ value, onChange, team = [], isMobile }) {
             <option value="">—</option>
             {PLATFORMS.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
+        </div>
+        <div>
+          <label style={lbl}>{i18n.t("Account (billed to)")}</label>
+          <input data-testid="input-account" list="lc-accounts" value={lc.account} placeholder="e.g. Bear, Direct" onChange={(e) => set("account", e.target.value)} style={inp} />
+          <datalist id="lc-accounts">{accounts.map((a) => <option key={a} value={a} />)}</datalist>
+        </div>
+        <div>
+          <label style={lbl}>{i18n.t("Retainer h / month")}</label>
+          <input data-testid="input-retainerHours" type="number" min="0" step="0.5" value={lc.retainerHours} placeholder="0 = no retainer" onChange={(e) => set("retainerHours", e.target.value)} style={inp} />
         </div>
         <div>
           <label style={lbl}>{i18n.t("Hosting")}</label>
